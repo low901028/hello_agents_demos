@@ -1,0 +1,20 @@
+[package]
+name = "axum-demos"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = {version = "0.8", features = []}
+tokio = {version = "1", features = ["macros", "rt-multi-thread"]}
+#serde = {version = "1"}
+serde_json = {version = "1"}
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+anyhow = "1"
+async-trait = "0.1"
+dotenvy = "0.15"
+futures = "0.3"
+
+[dev-dependencies]
+wiremock = "0.6"
