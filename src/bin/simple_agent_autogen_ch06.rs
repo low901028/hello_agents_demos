@@ -22,10 +22,10 @@ async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
     // 1、创建LLM client
-    let model = "deepseek-v4-pro";
+    let model = env::var("DEEPSEEK_MODEL_ID").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let api_key = env::var("DEEPSEEK_API_KEY").context("请设置 DEEPSEEK_API_KEY 环境变量")?;
     let base_url =
-        env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".into());
+        env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".into());
     let timeout = env::var("LLM_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
