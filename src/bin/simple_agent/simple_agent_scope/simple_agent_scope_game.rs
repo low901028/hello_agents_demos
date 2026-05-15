@@ -20,7 +20,12 @@ const LLM_TEMPERATURE: f64 = 0.7;
 
 // ==================== Agent ====================
 
-struct Agent {
+/// ================================================
+/// <strong>玩家构建实例</strong>
+/// 根据设置的提示词为不同的智能体注入了“游戏角色”和“三国人格”的双重身份
+///
+/// ================================================
+struct DialogAgent {
     name: String,
     role: String,
     system_prompt: String,
@@ -29,7 +34,7 @@ struct Agent {
     rx: Option<broadcast::Receiver<(String, String)>>,
 }
 
-impl Agent {
+impl DialogAgent {
     fn new(name: String, role: String, character: &str, client: Arc<HelloAgentsLLM>) -> Self {
         let system_prompt = get_role_prompt(&role, character);
         Self {
@@ -92,10 +97,15 @@ impl Agent {
     }
 }
 
-// ==================== 游戏主类 ====================
-
+/// ==================== 游戏主类 ====================
+/// <strong>游戏的主控制器</strong>
+/// - 负责维护全局的状态： 玩家存活列表、当前游戏阶段
+/// - 推进游戏流程(调用夜晚阶段、白天阶段)
+/// - 裁定胜负
+///
+/// ================================================
 pub struct ThreeKingdomsWerewolfGame {
-    players: HashMap<String, Agent>,
+    players: HashMap<String, DialogAgent>,
     roles: HashMap<String, String>,
     moderator: GameModerator,
     alive_players: Vec<String>,
@@ -112,25 +122,26 @@ pub struct ThreeKingdomsWerewolfGame {
 impl ThreeKingdomsWerewolfGame {
     pub fn new(client: Arc<HelloAgentsLLM>) -> Self {
         Self {
-            players: HashMap::new(),
-            roles: HashMap::new(),
-            moderator: GameModerator::new(),
-            alive_players: Vec::new(),
-            werewolves: Vec::new(),
-            villagers: Vec::new(),
-            seer: None,
-            witch: None,
-            hunter: None,
-            witch_has_antidote: true,
-            witch_has_poison: true,
-            client,
+            players: HashMap::new(),                // 玩家
+            roles: HashMap::new(),                  // 玩家角色
+            moderator: GameModerator::new(),        // 游戏仲裁者
+            alive_players: Vec::new(),              // 生存的玩家
+            werewolves: Vec::new(),                 // 狼人
+            villagers: Vec::new(),                  // 村民
+            seer: None,                             // 预言家
+            witch: None,                            // 巫婆
+            hunter: None,                           // 猎人
+            witch_has_antidote: true,               // 巫婆是否有解药
+            witch_has_poison: true,                 // 巫婆是否有毒药
+            client,                                 // llm client
         }
     }
 
+    /// 生存玩家的姓名
     fn alive_names(&self) -> Vec<&str> {
         self.alive_players.iter().map(|s| s.as_str()).collect()
     }
-
+    /// 消灭所有狼人
     fn non_wolf_targets(&self) -> Vec<String> {
         self.alive_players
             .iter()
@@ -138,14 +149,14 @@ impl ThreeKingdomsWerewolfGame {
             .cloned()
             .collect()
     }
-
+    /// 生存玩家的角色
     fn get_alive_roles(&self) -> Vec<String> {
         self.alive_players
             .iter()
             .map(|name| self.roles.get(name).cloned().unwrap_or_else(|| "村民".into()))
             .collect()
     }
-
+    /// 提出已阵亡的角色
     fn remove_dead(&mut self, dead: &str) {
         self.alive_players.retain(|p| p != dead);
         self.werewolves.retain(|p| p != dead);
@@ -154,12 +165,13 @@ impl ThreeKingdomsWerewolfGame {
         if self.witch.as_deref() == Some(dead) { self.witch = None; }
         if self.hunter.as_deref() == Some(dead) { self.hunter = None; }
     }
-
     /// 为指定玩家组创建 MsgHub
+    /// 便于不同的玩家组间通信
     fn create_hub_for(&mut self, group: &[String], auto_broadcast: bool) -> (MsgHub, broadcast::Sender<(String, String)>) {
-        let mut hub = MsgHub::new(group.to_vec(), auto_broadcast);
+        // 为指定的玩家组，构建message hub
+        let hub = MsgHub::new(group.to_vec(), auto_broadcast);
         let tx = hub.sender();
-        for name in group {
+        for name in group {  // 为了指定的玩家组不同的角色绑定到该message hub
             if let Some(agent) = self.players.get_mut(name) {
                 let rx = hub.subscribe();
                 agent.bind_hub(rx);
@@ -173,12 +185,12 @@ impl ThreeKingdomsWerewolfGame {
     }
 
     // ==================== 初始化 ====================
-
+    /// 创建游戏玩家
     async fn create_player(&mut self, role: &str, character: &str) -> Result<()> {
         let name = get_chinese_name(Some(character));
         self.roles.insert(name.clone(), role.to_string());
 
-        let mut agent = Agent::new(name.clone(), role.to_string(), character, self.client.clone());
+        let mut agent = DialogAgent::new(name.clone(), role.to_string(), character, self.client.clone());
         let intro = format!(
             "【{}】你在这场三国狼人杀中扮演{}，你的角色是{}。{}",
             name, get_role_desc(role), character, get_role_ability(role)
@@ -196,7 +208,7 @@ impl ThreeKingdomsWerewolfGame {
         self.players.insert(name, agent);
         Ok(())
     }
-
+    /// 启动游戏
     async fn setup_game(&mut self, player_count: usize) -> Result<()> {
         println!("🎮 开始设置三国狼人杀游戏...");
         let roles = get_standard_setup(player_count);
@@ -221,7 +233,8 @@ impl ThreeKingdomsWerewolfGame {
     }
 
     // ==================== 夜晚阶段 ====================
-
+    /// 狼人阶段： 选择击杀目标
+    /// 狼人aget
     async fn werewolf_phase(&mut self) -> Option<String> {
         if self.werewolves.is_empty() {
             return None;
@@ -229,8 +242,14 @@ impl ThreeKingdomsWerewolfGame {
         self.moderator.announce("🐺 狼人请睁眼，选择今晚要击杀的目标...");
 
         let wolves = self.werewolves.clone();
+        // 构建狼人间的通信channel
         let (mut hub, tx) = self.create_hub_for(&wolves, true);
 
+        // 狼人间密谋
+        // 1、讨论击杀目标
+        // 2、彼此交换消息
+
+        // 狼人间讨论
         for _ in 0..MAX_DISCUSSION_ROUND {
             let participants = hub.participants().to_vec();
             for wolf_name in &participants {
@@ -238,6 +257,7 @@ impl ThreeKingdomsWerewolfGame {
                     "狼人们，请讨论今晚的击杀目标。存活玩家：{}",
                     format_player_list(&self.alive_names(), None)
                 );
+                // 向其他狼人交换消息，讨论击杀策略
                 if let Some(wolf) = self.players.get_mut(wolf_name) {
                     if let Ok((text, _)) = wolf.speak::<DiscussionModelCN>(&context).await {
                         self.broadcast(&tx, wolf_name, &text);
@@ -247,10 +267,11 @@ impl ThreeKingdomsWerewolfGame {
         }
 
         hub.set_auto_broadcast(false);
-
+        // 投票
         let mut votes: HashMap<String, String> = HashMap::new();
         let targets = self.non_wolf_targets();
 
+        // 确定击杀对象
         for wolf_name in &wolves {
             let context = "请选择击杀目标。输出JSON：{\"target\":\"玩家名\",\"kill_strategy\":\"策略\"}";
             if let Some(wolf) = self.players.get_mut(wolf_name) {
@@ -266,10 +287,13 @@ impl ThreeKingdomsWerewolfGame {
             }
         }
 
+        // 裁决最终的击杀对象
         let (killed, _) = majority_vote_cn(&votes);
         Some(killed)
     }
 
+    /// 预言家阶段：主要是对指定的玩家进行查验
+    /// 预言家agent
     async fn seer_phase(&mut self) {
         let seer_name = match &self.seer {
             Some(name) => name.clone(),
@@ -292,6 +316,8 @@ impl ThreeKingdomsWerewolfGame {
         }
     }
 
+    /// 巫婆阶段
+    /// 巫婆agent
     async fn witch_phase(&mut self, killed: Option<String>) -> (Option<String>, Option<String>) {
         let witch_name = match &self.witch {
             Some(name) => name.clone(),
@@ -332,13 +358,15 @@ impl ThreeKingdomsWerewolfGame {
     }
 
     // ==================== 白天阶段 ====================
-
+    /// 白天阶段
     async fn day_phase(&mut self, round: usize) -> String {
         self.moderator.day_announcement(round);
 
+        // 构建所有存活玩家间message hub
         let alive = self.alive_players.clone();
         let (mut hub, tx) = self.create_hub_for(&alive, true);
-
+        // 所有存活玩家间自由讨论
+        // 讨论agent
         let participants = hub.participants().to_vec();
         for name in &participants {
             let context = format!(
@@ -354,6 +382,7 @@ impl ThreeKingdomsWerewolfGame {
 
         hub.set_auto_broadcast(false);
 
+        // 投票agent
         let mut votes: HashMap<String, String> = HashMap::new();
         for name in &alive {
             let context = format!(
@@ -372,6 +401,8 @@ impl ThreeKingdomsWerewolfGame {
         voted
     }
 
+    /// 猎人阶段
+    /// 猎人agent
     async fn hunter_phase(&mut self, voted_out: &str) -> Option<String> {
         if Some(voted_out) != self.hunter.as_deref() {
             return None;
@@ -383,7 +414,7 @@ impl ThreeKingdomsWerewolfGame {
             "你被淘汰，是否开枪？存活玩家：{}。输出JSON：{{\"shoot\":bool,\"target\":\"目标\"}}",
             format_player_list(&self.alive_names(), None)
         );
-
+        // 猎人使用技能淘汰选择玩家
         if let Some(hunter) = self.players.get_mut(&hunter_name) {
             if let Ok((_, Some(parsed))) = hunter.speak::<HunterModelCN>(&context).await {
                 if parsed.shoot {

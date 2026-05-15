@@ -1,5 +1,10 @@
 use tokio::sync::broadcast;
 
+/// ====================================================
+/// 智能体交互层
+/// - 所有智能体间的通信(狼人间的秘密协商， 白天公开辩论等)
+/// - 消息路由和分发
+/// ====================================================
 pub struct MsgHub {
     tx: broadcast::Sender<(String, String)>,
     participants: Vec<String>,
