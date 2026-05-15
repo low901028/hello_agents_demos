@@ -58,26 +58,19 @@ impl HelloAgentsLLM {
         base_url: Option<&str>,
         timeout_secs: Option<u64>,
     ) -> Result<Self> {
-        // 加载 .env 文件（如果存在）
-        dotenv().ok();
-
         let model = model
             .map(|s| s.to_string())
-            .or_else(|| env::var("LLM_MODEL_ID").ok())
-            .context("模型 ID 未提供，且环境变量 LLM_MODEL_ID 未设置")?;
+            .context("模型 ID 未提供")?;
 
         let api_key = api_key
             .map(|s| s.to_string())
-            .or_else(|| env::var("LLM_API_KEY").ok())
-            .context("API 密钥未提供，且环境变量 LLM_API_KEY 未设置")?;
+            .context("API 密钥未提供")?;
 
         let base_url = base_url
             .map(|s| s.to_string())
-            .or_else(|| env::var("LLM_BASE_URL").ok())
-            .context("服务地址未提供，且环境变量 LLM_BASE_URL 未设置")?;
+            .context("服务地址未提供")?;
 
         let timeout = timeout_secs
-            .or_else(|| env::var("LLM_TIMEOUT").ok().and_then(|v| v.parse().ok()))
             .unwrap_or(60);
 
         let client = Client::builder()
