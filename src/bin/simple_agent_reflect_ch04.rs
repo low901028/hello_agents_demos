@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let model = "deepseek-v4-pro";
     let api_key = env::var("DEEPSEEK_API_KEY").context("请设置 DEEPSEEK_API_KEY 环境变量")?;
     let base_url =
-        env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com/v1".into());
+        env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".into());
     let timeout = env::var("LLM_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())

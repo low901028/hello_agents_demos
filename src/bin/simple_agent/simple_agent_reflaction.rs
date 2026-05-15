@@ -182,6 +182,7 @@ impl ReflectionAgent {
         let messages = vec![Message {
             role: "user".into(),
             content: prompt.to_string(),
+            ..Default::default()
         }];
         self.llm_client.think(messages, 0.0).await
     }

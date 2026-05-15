@@ -60,6 +60,7 @@ impl ReActAgent {
                 Message {
                     role: "user".into(),
                     content: prompt,
+                    ..Default::default()
                 },
             ];
 

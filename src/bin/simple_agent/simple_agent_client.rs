@@ -7,10 +7,12 @@ use std::env;
 use std::time::Duration;
 
 /// 与 OpenAI 兼容的消息结构
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub (crate) struct Message {
     pub role: String,
     pub content: String,
+    #[serde(default,skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,   // 新增字段，兼容 OpenAI 格式
 }
 
 /// 请求体
@@ -158,10 +160,12 @@ mod tests {
             Message {
                 role: "system".into(),
                 content: "You are a test assistant.".into(),
+                ..Default::default()
             },
             Message {
                 role: "user".into(),
                 content: "Hello".into(),
+                ..Default::default()
             },
         ]
     }

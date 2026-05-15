@@ -90,6 +90,7 @@ impl Planner {
         let messages = vec![Message {
             role: "user".into(),
             content: prompt,
+            name: None,
         }];
 
         println!("--- 正在生成计划 ---");
@@ -165,6 +166,7 @@ impl Executor {
             let messages = vec![Message {
                 role: "user".into(),
                 content: prompt,
+                name: None,
             }];
 
             let response_text = match self.llm_client.think(messages, 0.0).await {
