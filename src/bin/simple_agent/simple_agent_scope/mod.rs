@@ -3,3 +3,4 @@ pub mod prompt_cn;
 pub mod structured_output;
 pub mod utils_cn;
 pub mod simple_agent_scope_game;
+mod msg_hub;

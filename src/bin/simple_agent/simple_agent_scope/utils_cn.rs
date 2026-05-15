@@ -17,7 +17,8 @@ pub fn get_chinese_name(character: Option<&str>) -> String {
             return c.to_string();
         }
     }
-    let idx = rand::thread_rng().gen_range(0..CHINESE_NAMES.len());
+    let mut rng = rand::thread_rng();
+    let idx = rng.gen_range(0..CHINESE_NAMES.len());
     CHINESE_NAMES[idx].to_string()
 }
 
@@ -72,23 +73,28 @@ pub fn check_winning_cn(alive_roles: &[String]) -> Option<String> {
     }
 }
 
+/// 游戏主持人（无状态设计，所有方法为纯函数，返回公告字符串）
 pub struct GameModerator {
-    pub name: String,
+    pub name: &'static str,
     pub game_log: Vec<String>,
 }
 
 impl GameModerator {
     pub fn new() -> Self {
         Self {
-            name: "游戏主持人".into(),
+            name: "游戏主持人",
             game_log: Vec::new(),
         }
     }
 
-    pub fn announce(&mut self, content: &str) -> String {
-        self.game_log.push(content.to_string());
-        let msg = format!("📢 {}", content);
+    fn push_and_print(&mut self, msg: &str) {
         println!("{}", msg);
+        self.game_log.push(msg.to_string());
+    }
+
+    pub fn announce(&mut self, content: &str) -> String {
+        let msg = format!("📢 {}", content);
+        self.push_and_print(&msg);
         msg
     }
 
@@ -101,10 +107,11 @@ impl GameModerator {
     }
 
     pub fn death_announcement(&mut self, dead_players: &[String]) -> String {
-        if dead_players.is_empty() {
+        if dead_players.is_empty() || dead_players.iter().all(|d| d.is_empty()) {
             self.announce("昨夜平安无事，无人死亡。")
         } else {
-            self.announce(&format!("昨夜，{}不幸遇害。", format_player_name_list(dead_players)))
+            let valid: Vec<_> = dead_players.iter().filter(|d| !d.is_empty()).cloned().collect();
+            self.announce(&format!("昨夜，{}不幸遇害。", format_player_name_list(&valid)))
         }
     }
 
@@ -115,24 +122,4 @@ impl GameModerator {
     pub fn game_over_announcement(&mut self, winner: &str) -> String {
         self.announce(&format!("🎉 游戏结束！{}", winner))
     }
-}
-
-pub fn calculate_suspicion_score(player_name: &str, game_history: &[HashMap<String, String>]) -> f64 {
-    let mut score = 0.0f64;
-    for event in game_history {
-        if event.get("type").map(|s| s.as_str()) == Some("vote")
-            && event.get("target").map(|s| s.as_str()) == Some(player_name)
-        {
-            score += 0.3;
-        } else if event.get("type").map(|s| s.as_str()) == Some("accusation")
-            && event.get("target").map(|s| s.as_str()) == Some(player_name)
-        {
-            score += 0.2;
-        } else if event.get("type").map(|s| s.as_str()) == Some("defense")
-            && event.get("player").map(|s| s.as_str()) == Some(player_name)
-        {
-            score -= 0.1;
-        }
-    }
-    score.max(0.0).min(1.0)
 }

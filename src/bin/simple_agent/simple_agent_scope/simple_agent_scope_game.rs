@@ -1,10 +1,8 @@
 use anyhow::{Context, Result};
-use dotenvy::dotenv;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
-use std::env;
 use std::sync::Arc;
-
+use tokio::sync::broadcast;
 use crate::simple_agent::simple_agent_client::{HelloAgentsLLM, Message};
 use super::game_roles::{get_role_ability, get_role_desc, get_standard_setup};
 use super::prompt_cn::get_role_prompt;
@@ -16,74 +14,85 @@ use super::utils_cn::{
     check_winning_cn, format_player_list, format_player_name_list, get_chinese_name,
     majority_vote_cn, GameModerator, MAX_DISCUSSION_ROUND, MAX_GAME_ROUND,
 };
+use super::msg_hub::MsgHub;
 
 const LLM_TEMPERATURE: f64 = 0.7;
+
+// ==================== Agent ====================
 
 struct Agent {
     name: String,
     role: String,
-    character: String,
     system_prompt: String,
     client: Arc<HelloAgentsLLM>,
     history: Vec<Message>,
+    rx: Option<broadcast::Receiver<(String, String)>>,
 }
 
 impl Agent {
-    fn new(name: String, role: String, character: String, client: Arc<HelloAgentsLLM>) -> Self {
-        let system_prompt = get_role_prompt(&role, &character);
+    fn new(name: String, role: String, character: &str, client: Arc<HelloAgentsLLM>) -> Self {
+        let system_prompt = get_role_prompt(&role, character);
         Self {
             name,
             role,
-            character,
             system_prompt,
             client,
             history: Vec::new(),
+            rx: None,
         }
     }
 
-    /// 接收一条旁观消息（不触发回复）
-    fn observe(&mut self, content: String) {
-        self.history.push(Message {
-            role: "system".into(),
-            content,
-            name: Some("游戏主持人".into()),
-        });
+    fn bind_hub(&mut self, rx: broadcast::Receiver<(String, String)>) {
+        self.rx = Some(rx);
     }
 
-    /// 调用 LLM 发言，返回 (content, parsed_json_option)
+    /// 拉取广播消息（非阻塞）
+    fn poll_broadcast(&mut self) {
+        if let Some(ref mut rx) = self.rx {
+            while let Ok((sender, content)) = rx.try_recv() {
+                if sender != self.name {
+                    self.history.push(Message::assistant(&sender, &content));
+                }
+            }
+        }
+    }
+
+    /// 系统消息（不触发 LLM）
+    fn observe(&mut self, content: String) {
+        self.history.push(Message::system(content));
+    }
+
+    /// 调用 LLM 发言并尝试解析结构化输出
     async fn speak<T: for<'de> serde::Deserialize<'de>>(
         &mut self,
         context: &str,
     ) -> Result<(String, Option<T>)> {
-        let mut messages = vec![Message {
-            role: "system".into(),
-            content: self.system_prompt.clone(),
-            name: None,
-        }];
-        messages.extend(self.history.clone());
-        messages.push(Message {
-            role: "user".into(),
-            content: context.to_string(),
-            name: Some("游戏主持人".into()),
-        });
+        self.poll_broadcast();
+
+        let mut messages = vec![
+            Message {
+                role: "system".into(),
+                content: self.system_prompt.clone(),
+                name: None,
+            },
+        ];
+        messages.extend_from_slice(&self.history);
+        messages.push(Message::user(context));
 
         let response = self.client.think(messages, LLM_TEMPERATURE).await?;
 
-        // 将发言加入历史
-        self.history.push(Message {
-            role: "assistant".into(),
-            content: response.clone(),
-            name: Some(self.name.clone()),
-        });
+        self.history.push(Message::assistant(&self.name, &response));
 
         let parsed = parse_json::<T>(&response);
         if parsed.is_none() {
-            eprintln!("⚠️ {} 的输出解析失败，原始: {}", self.name, &response[..response.len().min(100)]);
+            eprintln!("⚠️ {} 输出解析失败: {:.100}...", self.name, response);
         }
 
         Ok((response, parsed))
     }
 }
+
+// ==================== 游戏主类 ====================
 
 pub struct ThreeKingdomsWerewolfGame {
     players: HashMap<String, Agent>,
@@ -118,27 +127,64 @@ impl ThreeKingdomsWerewolfGame {
         }
     }
 
+    fn alive_names(&self) -> Vec<&str> {
+        self.alive_players.iter().map(|s| s.as_str()).collect()
+    }
+
+    fn non_wolf_targets(&self) -> Vec<String> {
+        self.alive_players
+            .iter()
+            .filter(|p| !self.werewolves.contains(p))
+            .cloned()
+            .collect()
+    }
+
+    fn get_alive_roles(&self) -> Vec<String> {
+        self.alive_players
+            .iter()
+            .map(|name| self.roles.get(name).cloned().unwrap_or_else(|| "村民".into()))
+            .collect()
+    }
+
+    fn remove_dead(&mut self, dead: &str) {
+        self.alive_players.retain(|p| p != dead);
+        self.werewolves.retain(|p| p != dead);
+        self.villagers.retain(|p| p != dead);
+        if self.seer.as_deref() == Some(dead) { self.seer = None; }
+        if self.witch.as_deref() == Some(dead) { self.witch = None; }
+        if self.hunter.as_deref() == Some(dead) { self.hunter = None; }
+    }
+
+    /// 为指定玩家组创建 MsgHub
+    fn create_hub_for(&mut self, group: &[String], auto_broadcast: bool) -> (MsgHub, broadcast::Sender<(String, String)>) {
+        let mut hub = MsgHub::new(group.to_vec(), auto_broadcast);
+        let tx = hub.sender();
+        for name in group {
+            if let Some(agent) = self.players.get_mut(name) {
+                let rx = hub.subscribe();
+                agent.bind_hub(rx);
+            }
+        }
+        (hub, tx)
+    }
+
+    fn broadcast(&self, tx: &broadcast::Sender<(String, String)>, sender: &str, content: &str) {
+        let _ = tx.send((sender.to_string(), content.to_string()));
+    }
+
+    // ==================== 初始化 ====================
+
     async fn create_player(&mut self, role: &str, character: &str) -> Result<()> {
         let name = get_chinese_name(Some(character));
         self.roles.insert(name.clone(), role.to_string());
 
-        let mut agent = Agent::new(
-            name.clone(),
-            role.to_string(),
-            character.to_string(),
-            self.client.clone(),
-        );
-
+        let mut agent = Agent::new(name.clone(), role.to_string(), character, self.client.clone());
         let intro = format!(
             "【{}】你在这场三国狼人杀中扮演{}，你的角色是{}。{}",
-            name,
-            get_role_desc(role),
-            character,
-            get_role_ability(role)
+            name, get_role_desc(role), character, get_role_ability(role)
         );
         agent.observe(self.moderator.announce(&intro));
 
-        // 分配到对应阵营
         match role {
             "狼人" => self.werewolves.push(name.clone()),
             "预言家" => self.seer = Some(name.clone()),
@@ -148,16 +194,17 @@ impl ThreeKingdomsWerewolfGame {
         }
         self.alive_players.push(name.clone());
         self.players.insert(name, agent);
-
         Ok(())
     }
 
     async fn setup_game(&mut self, player_count: usize) -> Result<()> {
         println!("🎮 开始设置三国狼人杀游戏...");
-
         let roles = get_standard_setup(player_count);
         let mut rng = rand::thread_rng();
-        let mut characters = vec!["刘备", "关羽", "张飞", "诸葛亮", "赵云", "曹操", "司马懿", "周瑜", "孙权"];
+        let mut characters = vec![
+            "刘备", "关羽", "张飞", "诸葛亮", "赵云",
+            "曹操", "司马懿", "周瑜", "孙权",
+        ];
         characters.shuffle(&mut rng);
         characters.truncate(player_count);
 
@@ -165,55 +212,54 @@ impl ThreeKingdomsWerewolfGame {
             self.create_player(role, character).await?;
         }
 
-        let names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
         self.moderator.announce(&format!(
             "三国狼人杀游戏开始！参与者：{}",
-            format_player_list(&names, None)
+            format_player_list(&self.alive_names(), None)
         ));
-
         println!("✅ 游戏设置完成，共{}名玩家", self.alive_players.len());
         Ok(())
     }
 
-    async fn werewolf_phase(&mut self, round: usize) -> Option<String> {
+    // ==================== 夜晚阶段 ====================
+
+    async fn werewolf_phase(&mut self) -> Option<String> {
         if self.werewolves.is_empty() {
             return None;
         }
-
         self.moderator.announce("🐺 狼人请睁眼，选择今晚要击杀的目标...");
 
-        let alive_names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
+        let wolves = self.werewolves.clone();
+        let (mut hub, tx) = self.create_hub_for(&wolves, true);
 
-        // 狼人讨论（每个狼人发言一轮）
         for _ in 0..MAX_DISCUSSION_ROUND {
-            for wolf_name in &self.werewolves.clone() {
+            let participants = hub.participants().to_vec();
+            for wolf_name in &participants {
                 let context = format!(
                     "狼人们，请讨论今晚的击杀目标。存活玩家：{}",
-                    format_player_list(&alive_names, None)
+                    format_player_list(&self.alive_names(), None)
                 );
                 if let Some(wolf) = self.players.get_mut(wolf_name) {
-                    let _ = wolf.speak::<DiscussionModelCN>(&context).await;
+                    if let Ok((text, _)) = wolf.speak::<DiscussionModelCN>(&context).await {
+                        self.broadcast(&tx, wolf_name, &text);
+                    }
                 }
             }
         }
 
-        // 投票击杀
+        hub.set_auto_broadcast(false);
+
         let mut votes: HashMap<String, String> = HashMap::new();
-        for wolf_name in &self.werewolves.clone() {
-            let context = "请选择今晚要击杀的目标，输出JSON格式：{\"target\": \"玩家名\", \"kill_strategy\": \"策略\", ...}";
+        let targets = self.non_wolf_targets();
+
+        for wolf_name in &wolves {
+            let context = "请选择击杀目标。输出JSON：{\"target\":\"玩家名\",\"kill_strategy\":\"策略\"}";
             if let Some(wolf) = self.players.get_mut(wolf_name) {
                 match wolf.speak::<WerewolfKillModelCN>(context).await {
-                    Ok((_, Some(parsed))) => {
-                        votes.insert(wolf_name.clone(), parsed.target);
-                    }
+                    Ok((_, Some(parsed))) => { votes.insert(wolf_name.clone(), parsed.target); }
                     _ => {
-                        // 随机选择目标
-                        println!("⚠️ {} 的击杀投票无效，随机选择目标", wolf_name);
-                        let valid: Vec<&String> = self.alive_players.iter()
-                            .filter(|p| !self.werewolves.contains(p))
-                            .collect();
-                        if let Some(target) = valid.choose(&mut rand::thread_rng()) {
-                            votes.insert(wolf_name.clone(), (*target).clone());
+                        eprintln!("⚠️ {} 投票无效，随机选择目标", wolf_name);
+                        if let Some(t) = targets.choose(&mut rand::thread_rng()) {
+                            votes.insert(wolf_name.clone(), t.clone());
                         }
                     }
                 }
@@ -229,221 +275,173 @@ impl ThreeKingdomsWerewolfGame {
             Some(name) => name.clone(),
             None => return,
         };
+        self.moderator.announce("🔮 预言家请睁眼...");
 
-        self.moderator.announce("🔮 预言家请睁眼，选择要查验的玩家...");
-
-        let alive_names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
         let context = format!(
-            "请选择要查验的玩家。存活玩家：{}。输出JSON：{{\"target\": \"玩家名\", \"check_reason\": \"原因\", \"priority_level\": 1-10}}",
-            format_player_list(&alive_names, None)
+            "请选择要查验的玩家。存活玩家：{}。输出JSON：{{\"target\":\"玩家名\",\"check_reason\":\"原因\",\"priority_level\":1-10}}",
+            format_player_list(&self.alive_names(), None)
         );
 
         if let Some(seer) = self.players.get_mut(&seer_name) {
             if let Ok((_, Some(parsed))) = seer.speak::<SeerModelCN>(&context).await {
-                let target_role = self.roles.get(&parsed.target).map(|s| s.as_str()).unwrap_or("村民");
-                let result = format!(
-                    "查验结果：{}是{}",
-                    parsed.target,
-                    if target_role == "狼人" { "狼人" } else { "好人" }
-                );
-                seer.observe(self.moderator.announce(&result));
-            } else {
-                println!("⚠️ 预言家查验失败，跳过此阶段");
+                let is_wolf = self.roles.get(&parsed.target).map(|r| r == "狼人").unwrap_or(false);
+                seer.observe(self.moderator.announce(&format!(
+                    "查验结果：{}是{}", parsed.target, if is_wolf { "狼人" } else { "好人" }
+                )));
             }
         }
     }
 
-    async fn witch_phase(&mut self, killed_player: Option<String>) -> (Option<String>, Option<String>) {
+    async fn witch_phase(&mut self, killed: Option<String>) -> (Option<String>, Option<String>) {
         let witch_name = match &self.witch {
             Some(name) => name.clone(),
-            None => return (killed_player, None),
+            None => return (killed, None),
         };
-
         self.moderator.announce("🧙‍♀️ 女巫请睁眼...");
 
-        let death_info = if let Some(ref k) = killed_player {
-            format!("今晚{}被狼人击杀", k)
-        } else {
-            "今晚平安无事".into()
-        };
+        let info = killed.as_ref()
+            .map(|k| format!("今晚{}被狼人击杀", k))
+            .unwrap_or_else(|| "今晚平安无事".into());
 
         if let Some(witch) = self.players.get_mut(&witch_name) {
-            witch.observe(self.moderator.announce(&death_info));
+            witch.observe(self.moderator.announce(&info));
+            let context = "是否使用解药/毒药？输出JSON：{\"use_antidote\":bool,\"use_poison\":bool,\"target_name\":\"目标\"}";
 
-            let context = "请决定是否使用解药和毒药。输出JSON：{\"use_antidote\": true/false, \"use_poison\": true/false, \"target_name\": \"目标\", ...}";
-            match witch.speak::<WitchActionModelCN>(context).await {
-                Ok((_, Some(parsed))) => {
-                    let mut saved = None;
-                    let mut poisoned = None;
-
-                    if parsed.use_antidote && self.witch_has_antidote {
-                        if let Some(ref k) = killed_player {
-                            saved = Some(k.clone());
-                            self.witch_has_antidote = false;
-                            witch.observe(self.moderator.announce(&format!("你使用解药救了{}", k)));
-                        }
+            if let Ok((_, Some(parsed))) = witch.speak::<WitchActionModelCN>(context).await {
+                let mut saved = None;
+                let mut poisoned = None;
+                if parsed.use_antidote && self.witch_has_antidote {
+                    if let Some(ref k) = killed {
+                        saved = Some(k.clone());
+                        self.witch_has_antidote = false;
+                        witch.observe(self.moderator.announce(&format!("解药救了{}", k)));
                     }
-                    if parsed.use_poison && self.witch_has_poison {
-                        if let Some(ref target) = parsed.target_name {
-                            poisoned = Some(target.clone());
-                            self.witch_has_poison = false;
-                            witch.observe(self.moderator.announce(&format!("你使用毒药毒杀了{}", target)));
-                        }
-                    }
-
-                    let final_killed = if saved.is_some() { None } else { killed_player };
-                    (final_killed, poisoned)
                 }
-                _ => {
-                    println!("⚠️ 女巫行动失败，视为不使用技能");
-                    (killed_player, None)
+                if parsed.use_poison && self.witch_has_poison {
+                    if let Some(ref t) = parsed.target_name {
+                        poisoned = Some(t.clone());
+                        self.witch_has_poison = false;
+                        witch.observe(self.moderator.announce(&format!("毒药毒杀了{}", t)));
+                    }
+                }
+                let final_killed = if saved.is_some() { None } else { killed };
+                return (final_killed, poisoned);
+            }
+        }
+        (killed, None)
+    }
+
+    // ==================== 白天阶段 ====================
+
+    async fn day_phase(&mut self, round: usize) -> String {
+        self.moderator.day_announcement(round);
+
+        let alive = self.alive_players.clone();
+        let (mut hub, tx) = self.create_hub_for(&alive, true);
+
+        let participants = hub.participants().to_vec();
+        for name in &participants {
+            let context = format!(
+                "请自由讨论。存活玩家：{}。",
+                format_player_list(&self.alive_names(), None)
+            );
+            if let Some(player) = self.players.get_mut(name) {
+                if let Ok((text, _)) = player.speak::<DiscussionModelCN>(&context).await {
+                    self.broadcast(&tx, name, &text);
                 }
             }
-        } else {
-            (killed_player, None)
         }
+
+        hub.set_auto_broadcast(false);
+
+        let mut votes: HashMap<String, String> = HashMap::new();
+        for name in &alive {
+            let context = format!(
+                "请投票淘汰一名玩家。存活玩家：{}。输出JSON：{{\"vote\":\"玩家名\",\"reason\":\"理由\",\"suspicion_level\":1-10}}",
+                format_player_list(&self.alive_names(), None)
+            );
+            if let Some(player) = self.players.get_mut(name) {
+                if let Ok((_, Some(parsed))) = player.speak::<VoteModelCN>(&context).await {
+                    votes.insert(name.clone(), parsed.vote);
+                }
+            }
+        }
+
+        let (voted, count) = majority_vote_cn(&votes);
+        self.moderator.vote_result_announcement(&voted, count);
+        voted
     }
 
     async fn hunter_phase(&mut self, voted_out: &str) -> Option<String> {
-        let hunter_name = match &self.hunter {
-            Some(name) => name.clone(),
-            None => return None,
-        };
-
-        if hunter_name != voted_out {
+        if Some(voted_out) != self.hunter.as_deref() {
             return None;
         }
+        let hunter_name = voted_out.to_string();
+        self.moderator.announce("🏹 猎人发动技能！");
 
-        self.moderator.announce("🏹 猎人发动技能，可以带走一名玩家...");
-
-        let alive_names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
         let context = format!(
-            "你被投票出局，是否开枪？存活玩家：{}。输出JSON：{{\"shoot\": true/false, \"target\": \"目标\", ...}}",
-            format_player_list(&alive_names, None)
+            "你被淘汰，是否开枪？存活玩家：{}。输出JSON：{{\"shoot\":bool,\"target\":\"目标\"}}",
+            format_player_list(&self.alive_names(), None)
         );
 
         if let Some(hunter) = self.players.get_mut(&hunter_name) {
             if let Ok((_, Some(parsed))) = hunter.speak::<HunterModelCN>(&context).await {
                 if parsed.shoot {
-                    if let Some(ref target) = parsed.target {
-                        self.moderator.announce(&format!("猎人{}开枪带走了{}", hunter_name, target));
-                        return Some(target.clone());
+                    if let Some(ref t) = parsed.target {
+                        self.moderator.announce(&format!("猎人{}带走了{}", hunter_name, t));
+                        return Some(t.clone());
                     }
                 }
-            } else {
-                println!("⚠️ 猎人技能使用失败，视为放弃开枪");
             }
         }
         None
     }
 
-    fn update_alive_players(&mut self, dead_players: &[String]) {
-        for dead in dead_players {
-            if dead.is_empty() {
-                continue;
-            }
-            self.alive_players.retain(|p| p != dead);
-            self.werewolves.retain(|p| p != dead);
-            self.villagers.retain(|p| p != dead);
-            if self.seer.as_ref() == Some(dead) {
-                self.seer = None;
-            }
-            if self.witch.as_ref() == Some(dead) {
-                self.witch = None;
-            }
-            if self.hunter.as_ref() == Some(dead) {
-                self.hunter = None;
-            }
-        }
-    }
-
-    async fn day_phase(&mut self, round: usize) -> String {
-        self.moderator.day_announcement(round);
-
-        let alive_names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
-
-        // 自由讨论（每人发言一轮）
-        let players_clone = self.alive_players.clone();
-        for player_name in &players_clone {
-            let context = format!(
-                "现在开始自由讨论。存活玩家：{}。请发表你的看法。",
-                format_player_list(&alive_names, None)
-            );
-            if let Some(player) = self.players.get_mut(player_name) {
-                let _ = player.speak::<DiscussionModelCN>(&context).await;
-            }
-        }
-
-        // 投票阶段
-        let mut votes: HashMap<String, String> = HashMap::new();
-        for player_name in &self.alive_players.clone() {
-            let context = format!(
-                "请投票选择要淘汰的玩家。存活玩家：{}。输出JSON：{{\"vote\": \"玩家名\", \"reason\": \"理由\", \"suspicion_level\": 1-10}}",
-                format_player_list(&alive_names, None)
-            );
-            if let Some(player) = self.players.get_mut(player_name) {
-                match player.speak::<VoteModelCN>(&context).await {
-                    Ok((_, Some(parsed))) => {
-                        votes.insert(player_name.clone(), parsed.vote);
-                    }
-                    _ => {
-                        println!("⚠️ {} 的投票无效，视为弃票", player_name);
-                    }
-                }
-            }
-        }
-
-        let (voted_out, vote_count) = majority_vote_cn(&votes);
-        self.moderator.vote_result_announcement(&voted_out, vote_count);
-        voted_out
-    }
+    // ==================== 主循环 ====================
 
     pub async fn run_game(&mut self, player_count: usize) -> Result<()> {
         self.setup_game(player_count).await?;
 
         for round in 1..=MAX_GAME_ROUND {
-            println!("\n🌙 === 第{}轮游戏开始 ===", round);
+            println!("\n🌙 === 第{}轮 ===", round);
 
             // 夜晚
             self.moderator.night_announcement(round);
-            let killed = self.werewolf_phase(round).await;
+            let killed = self.werewolf_phase().await;
             self.seer_phase().await;
             let (final_killed, poisoned) = self.witch_phase(killed).await;
 
-            let night_deaths: Vec<String> = vec![final_killed, poisoned].into_iter().flatten().collect();
-            let night_death_names: Vec<String> = night_deaths.clone();
-            self.update_alive_players(&night_deaths);
-            self.moderator.death_announcement(&night_death_names);
+            // for dead in [final_killed, poisoned].into_iter().flatten() {
+            //     if !dead.is_empty() {
+            //         self.remove_dead(&dead);
+            //     }
+            // }
+            let night_deaths: Vec<_> = [final_killed, poisoned].into_iter().flatten().collect();
+            self.moderator.death_announcement(&night_deaths);
 
-            // 检查胜利条件
-            let alive_roles: Vec<String> = self.alive_players.iter()
-                .map(|name| self.roles.get(name).cloned().unwrap_or_else(|| "村民".into()))
-                .collect();
-            if let Some(winner) = check_winning_cn(&alive_roles) {
-                self.moderator.game_over_announcement(&winner);
+            if let Some(w) = check_winning_cn(&self.get_alive_roles()) {
+                self.moderator.game_over_announcement(&w);
                 return Ok(());
             }
 
             // 白天
-            let voted_out = self.day_phase(round).await;
-            let hunter_shot = self.hunter_phase(&voted_out).await.map_or("".into(), |v|{v.into()});
+            let voted = self.day_phase(round).await;
+            let shot = self.hunter_phase(&voted).await;
 
-            let day_deaths: Vec<String> = vec![voted_out, hunter_shot];
-            self.update_alive_players(&day_deaths);
+            self.remove_dead(&voted);
+            if let Some(ref s) = shot {
+                if !s.is_empty() { self.remove_dead(s); }
+            }
 
-            let alive_names: Vec<&str> = self.alive_players.iter().map(|s| s.as_str()).collect();
-            println!("第{}轮结束，存活玩家：{}", round, format_player_list(&alive_names, None));
+            println!("存活：{}", format_player_list(&self.alive_names(), None));
 
-            let alive_roles: Vec<String> = self.alive_players.iter()
-                .map(|name| self.roles.get(name).cloned().unwrap_or_else(|| "村民".into()))
-                .collect();
-            if let Some(winner) = check_winning_cn(&alive_roles) {
-                self.moderator.game_over_announcement(&winner);
+            if let Some(w) = check_winning_cn(&self.get_alive_roles()) {
+                self.moderator.game_over_announcement(&w);
                 return Ok(());
             }
         }
 
-        println!("游戏达到最大轮次，平局。");
+        println!("达到最大轮次，平局。");
         Ok(())
     }
 }

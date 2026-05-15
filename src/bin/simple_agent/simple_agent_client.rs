@@ -15,6 +15,35 @@ pub (crate) struct Message {
     pub name: Option<String>,   // 新增字段，兼容 OpenAI 格式
 }
 
+impl Message {
+    /// 创建系统消息
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".into(),
+            content: content.into(),
+            name: Some("系统".into()),
+        }
+    }
+
+    /// 创建用户消息
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".into(),
+            content: content.into(),
+            name: Some("游戏主持人".into()),
+        }
+    }
+
+    /// 创建助手消息
+    pub fn assistant(name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+            name: Some(name.into()),
+        }
+    }
+}
+
 /// 请求体
 #[derive(Debug, Serialize)]
 struct ChatCompletionRequest {

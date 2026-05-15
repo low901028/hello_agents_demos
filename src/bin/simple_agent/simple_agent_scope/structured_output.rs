@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct DiscussionModelCN {
     pub reach_agreement: bool,
     pub confidence_level: i32,
+    #[serde(default)]
     pub key_evidence: Option<String>,
 }
 
@@ -20,7 +21,9 @@ pub struct WitchActionModelCN {
     pub use_antidote: bool,
     #[serde(default)]
     pub use_poison: bool,
+    #[serde(default)]
     pub target_name: Option<String>,
+    #[serde(default)]
     pub action_reason: Option<String>,
 }
 
@@ -35,7 +38,9 @@ pub struct SeerModelCN {
 pub struct HunterModelCN {
     #[serde(default)]
     pub shoot: bool,
+    #[serde(default)]
     pub target: Option<String>,
+    #[serde(default)]
     pub shoot_reason: Option<String>,
 }
 
@@ -43,44 +48,40 @@ pub struct HunterModelCN {
 pub struct WerewolfKillModelCN {
     pub target: String,
     pub kill_strategy: String,
+    #[serde(default)]
     pub team_coordination: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct GameAnalysisModelCN {
-    #[serde(default)]
-    pub suspected_werewolves: Vec<String>,
-    #[serde(default)]
-    pub trusted_players: Vec<String>,
-    #[serde(default)]
-    pub key_clues: Vec<String>,
-    pub next_strategy: String,
-}
-
-/// 解析 LLM 返回的 JSON 为指定结构化类型
+/// 从 LLM 响应中提取 JSON 并解析为指定类型
 pub fn parse_json<T: for<'de> Deserialize<'de>>(text: &str) -> Option<T> {
-    // 尝试直接解析
+    let text = text.trim();
+
+    // 1. 尝试直接解析
     if let Ok(val) = serde_json::from_str::<T>(text) {
         return Some(val);
     }
-    // 尝试从 ```json ... ``` 代码块中提取
+
+    // 2. 查找 JSON 代码块 (```json ... ```)
     if let Some(start) = text.find("```json") {
-        let inner = &text[start + 7..];
-        if let Some(end) = inner.find("```") {
-            let json_str = &inner[..end].trim();
+        let after = &text[start + 7..];
+        if let Some(end) = after.find("```") {
+            let json_str = after[..end].trim();
             if let Ok(val) = serde_json::from_str::<T>(json_str) {
                 return Some(val);
             }
         }
     }
-    // 尝试找到第一个 { 和最后一个 }
+
+    // 3. 查找 {} 包裹的 JSON
     if let Some(start) = text.find('{') {
         if let Some(end) = text.rfind('}') {
+            // 注意：start..=end 包含最后一个字符
             let json_str = &text[start..=end];
             if let Ok(val) = serde_json::from_str::<T>(json_str) {
                 return Some(val);
             }
         }
     }
+
     None
 }
