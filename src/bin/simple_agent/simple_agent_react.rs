@@ -65,7 +65,7 @@ impl ReActAgent {
             ];
 
             // 调用 LLM（异步）
-            let response_text = match self.llm_client.think(messages, 0.0).await {
+            let response_text = match self.llm_client.think(messages, 0.0, Some(true)).await {
                 Ok(text) => text,
                 Err(e) => {
                     eprintln!("错误：LLM 返回错误 - {}", e);

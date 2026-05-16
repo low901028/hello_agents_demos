@@ -57,7 +57,7 @@ impl Agent {
         messages.extend_from_slice(history);
 
         // 调用 LLM
-        let response = client.think(messages, 0.7).await?;
+        let response = client.think(messages, 0.7, Some(true)).await?;
         Ok(response)
     }
 

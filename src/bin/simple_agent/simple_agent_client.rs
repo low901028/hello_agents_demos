@@ -117,14 +117,14 @@ impl HelloAgentsLLM {
     }
 
     /// 调用 LLM 思考，返回完整响应文本
-    pub async fn think(&self, messages: Vec<Message>, temperature: f64) -> Result<String> {
+    pub async fn think(&self, messages: Vec<Message>, temperature: f64, is_stream: Option<bool>) -> Result<String> {
         println!("🧠 正在调用 {} 模型...", self.model);
 
         let body = ChatCompletionRequest {
             model: self.model.clone(),
             messages,
             temperature,
-            stream: true,
+            stream: is_stream.unwrap_or(false),
         };
 
         let resp = self
@@ -144,36 +144,58 @@ impl HelloAgentsLLM {
         }
 
         println!("✅ 大语言模型响应成功:");
+        let result = match is_stream {
+            Some(is_stream) => {
+                let mut collected = String::new();
+                let mut stream = resp.bytes_stream();
 
-        let mut collected = String::new();
-        let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.context("读取流数据失败")?;
+                    let text = String::from_utf8_lossy(&chunk);
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("读取流数据失败")?;
-            let text = String::from_utf8_lossy(&chunk);
-
-            // SSE 格式: "data: ...\n\n"
-            for line in text.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" {
-                        break;
-                    }
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        if let Some(first_choice) = chunk.choices.first() {
-                            if let Some(content) = &first_choice.delta.content {
-                                print!("{}", content);
-                                use std::io::Write;
-                                std::io::stdout().flush().ok();
-                                collected.push_str(content);
+                    // SSE 格式: "data: ...\n\n"
+                    for line in text.lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" {
+                                break;
+                            }
+                            if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                                if let Some(first_choice) = chunk.choices.first() {
+                                    if let Some(content) = &first_choice.delta.content {
+                                        print!("{}", content);
+                                        use std::io::Write;
+                                        std::io::stdout().flush().ok();
+                                        collected.push_str(content);
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
 
-        println!(); // 流式输出结束后换行
-        Ok(collected)
+                println!(); // 流式输出结束后换行
+                Ok(collected)
+            },
+            None => {
+                /// deepseek api中stream和非stream输出格式有所不同
+                #[derive(Deserialize)]
+                struct NonStreamResponse {
+                    choices: Vec<NonStreamChoice>,
+                }
+                #[derive(Deserialize)]
+                struct NonStreamChoice {
+                    message: Delta,
+                }
+                let data: NonStreamResponse = resp.json().await.context("解析响应失败")?;
+                let content = data.choices
+                    .first()
+                    .and_then(|c| c.message.content.clone())
+                    .unwrap_or_default();
+
+                Ok(content)
+            }
+        };
+        result
     }
 }
 
@@ -255,7 +277,7 @@ mod tests {
             .unwrap();
 
         let messages = test_messages();
-        let result = client.think(messages, 0.0).await;
+        let result = client.think(messages, 0.0, Some(true)).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Hello World");
@@ -281,7 +303,7 @@ mod tests {
         )
             .unwrap();
 
-        let result = client.think(test_messages(), 0.0).await;
+        let result = client.think(test_messages(), 0.0, Some(true)).await;
         assert!(result.is_err());
         let err_str = result.err().unwrap().to_string();
         assert!(err_str.contains("500") || err_str.contains("Internal Error"));
@@ -314,7 +336,7 @@ mod tests {
         )
             .unwrap();
 
-        let result = client.think(test_messages(), 0.0).await;
+        let result = client.think(test_messages(), 0.0, Some(true)).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ""); // 空字符串
     }

@@ -6,3 +6,4 @@ pub mod simple_agent_reflaction;
 pub mod simple_agent_plain_and_solve;
 pub mod simple_agent_autogen;
 pub mod simple_agent_scope;
+pub mod simple_agent_camel;

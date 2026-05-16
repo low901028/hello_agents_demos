@@ -84,7 +84,7 @@ impl DialogAgent {
         messages.extend_from_slice(&self.history);
         messages.push(Message::user(context));
 
-        let response = self.client.think(messages, LLM_TEMPERATURE).await?;
+        let response = self.client.think(messages, LLM_TEMPERATURE, Some(true)).await?;
 
         self.history.push(Message::assistant(&self.name, &response));
 

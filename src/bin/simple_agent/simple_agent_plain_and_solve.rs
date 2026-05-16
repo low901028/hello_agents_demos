@@ -94,7 +94,7 @@ impl Planner {
         }];
 
         println!("--- 正在生成计划 ---");
-        let response_text = match self.llm_client.think(messages, 0.0).await {
+        let response_text = match self.llm_client.think(messages, 0.0, Some(true)).await {
             Ok(text) => text,
             Err(e) => {
                 eprintln!("❌ 调用LLM失败: {}", e);
@@ -169,7 +169,7 @@ impl Executor {
                 name: None,
             }];
 
-            let response_text = match self.llm_client.think(messages, 0.0).await {
+            let response_text = match self.llm_client.think(messages, 0.0, Some(true)).await {
                 Ok(text) => text,
                 Err(e) => {
                     eprintln!("❌ 步骤 {} 执行失败: {}", step_num, e);
