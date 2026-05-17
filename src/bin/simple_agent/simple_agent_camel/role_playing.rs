@@ -167,7 +167,7 @@ impl RolePlaying {
             name: Some(self.user_role.clone()),
         });
 
-        let assistant_response = self.client.think(assistant_messages, 0.7, None).await?;
+        let assistant_response = self.client.think(assistant_messages, 0.7, Some(true)).await?;
 
         // 2. 构建用户上下文
         let mut user_messages = vec![
@@ -187,7 +187,7 @@ impl RolePlaying {
             name: Some(self.assistant_role.clone()),
         });
 
-        let user_response = self.client.think(user_messages, 0.7, None).await?;
+        let user_response = self.client.think(user_messages, 0.7, Some(true)).await?;
 
         // 3. 更新历史
         self.assistant_history.push(Message {
