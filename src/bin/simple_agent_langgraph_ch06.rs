@@ -6,14 +6,67 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use crate::simple_agent::simple_agent_client::HelloAgentsLLM;
-use crate::simple_agent::simple_agent_langgraph::search_agent::TavilyClient;
-use crate::simple_agent::simple_agent_langgraph::tavily_search::{AgentEvent, SearchAgent};
+use crate::simple_agent::simple_agent_langgraph::lang_graph::{GraphState, Message, StreamEvent};
+use crate::simple_agent::simple_agent_langgraph::search_agent::{SearchAssistant, SearchState};
+use crate::simple_agent::simple_agent_langgraph::tavily_search::{TavilyClient};
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_CYAN: &str = "\x1b[36m";
 const COLOR_YELLOW: &str = "\x1b[33m";
 const COLOR_GREEN: &str = "\x1b[32m";
 const COLOR_RED: &str = "\x1b[31m";
+
+use std::io::{self, Read, Write};
+
+/// 安全读取一行输入，支持非 UTF-8 字符
+fn read_line_lossy() -> Option<String> {
+    use std::io::Read;
+
+    let mut buffer = Vec::new();
+    let mut stdin = std::io::stdin().lock();
+
+    loop {
+        let mut byte = [0u8; 1];
+        match stdin.read_exact(&mut byte) {
+            Ok(()) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                buffer.push(byte[0]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                if buffer.is_empty() {
+                    return None;
+                }
+                break;
+            }
+            Err(e) => {
+                eprintln!("❌ 读取输入失败: {}", e);
+                return None;
+            }
+        }
+    }
+
+    if buffer.is_empty() {
+        return Some(String::new());
+    }
+
+    let lossy_string = String::from_utf8_lossy(&buffer);
+    let trimmed = lossy_string.trim().to_string();
+
+    if trimmed.is_empty() {
+        Some(String::new())
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// 带提示词的安全输入
+fn prompt_input(prompt: &str) -> Option<String> {
+    print!("{}", prompt);
+    std::io::stdout().flush().ok()?;
+    read_line_lossy()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,7 +86,7 @@ async fn main() -> Result<()> {
     let tavily_api_key = env::var("TAVILY_API_KEY")
         .map_err(|_| anyhow::anyhow!("❌ 请设置环境变量 TAVILY_API_KEY"))?;
 
-    println!("☄️ 欢迎来到智能电子书的世界！");
+    println!("☄️ 欢迎来到智能AI的世界！");
 
     let client = Arc::new(HelloAgentsLLM::new(
         Some(&model),
@@ -44,7 +97,9 @@ async fn main() -> Result<()> {
 
     let tavily = Arc::new(TavilyClient::new(tavily_api_key));
 
-    let agent = Arc::new(SearchAgent::new(client, tavily));
+    // 创建搜索助手并编译图
+    let assistant = SearchAssistant::new(client, tavily);
+    let app = Arc::new(assistant.compile());
 
     println!("{}🔍 智能搜索助手启动！{}", COLOR_CYAN, COLOR_RESET);
     println!("我会使用 Tavily API 为您搜索最新、最准确的信息");
@@ -58,6 +113,7 @@ async fn main() -> Result<()> {
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         let input = input.trim().to_string();
+        let input = prompt_input(&input).unwrap_or_else(|| "".to_string());
 
         if input.is_empty() {
             continue;
@@ -69,43 +125,56 @@ async fn main() -> Result<()> {
         }
 
         session_count += 1;
+        let thread_id = format!("session-{}", session_count);
+
+        let initial_state = GraphState::<SearchState> {
+            data: SearchState {
+                user_query: String::new(),
+                search_query: String::new(),
+                search_results: String::new(),
+                final_answer: String::new(),
+                step: "start".into(),
+            },
+            messages: vec![Message::new("user", &input, Some("用户".into()))],
+        };
+
         println!("\n{}============================================================{}", COLOR_GREEN, COLOR_RESET);
 
-        // 创建 channel 接收中间状态
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        // ==================== 流式执行 ====================
+        let app = Arc::clone(&app);
+        let tid = thread_id.clone();
 
-        let agent = Arc::clone(&agent);
-        // 异步执行搜索
-        let handle = tokio::spawn(async move {
-            agent.run(input, tx).await
-        });
-
-        // 接收并显示中间状态
-        while let Some(event) = rx.recv().await {
-            match event {
-                AgentEvent::Stage(stage, message) => {
-                    match stage.as_str() {
-                        "understand" => println!("{}🧠 理解阶段: {}{}", COLOR_CYAN, message, COLOR_RESET),
-                        "search" => println!("{}🔍 搜索阶段: {}{}", COLOR_CYAN, message, COLOR_RESET),
-                        _ => println!("{}📋 {}: {}{}", COLOR_CYAN, stage, message, COLOR_RESET),
+        match app.stream(&tid, initial_state).await {
+            Ok(mut rx) => {
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        StreamEvent::NodeStart(name) => {
+                            match name.as_str() {
+                                "understand" => println!("{}🧠 [节点] 理解阶段开始...{}", COLOR_CYAN, COLOR_RESET),
+                                "search" => println!("{}🔍 [节点] 搜索阶段开始...{}", COLOR_YELLOW, COLOR_RESET),
+                                "answer" => println!("{}💡 [节点] 生成答案阶段开始...{}", COLOR_GREEN, COLOR_RESET),
+                                _ => println!("{}📋 [节点] {} 开始{}", COLOR_CYAN, name, COLOR_RESET),
+                            }
+                        }
+                        StreamEvent::NodeEnd(name, state) => {
+                            if name == "answer" {
+                                println!("{}✅ 最终答案:{}\n{}", COLOR_GREEN, COLOR_RESET, state.data.final_answer);
+                            }
+                        }
+                        StreamEvent::CheckpointSaved(_, step) => {
+                            // 可选：打印检查点保存信息
+                            if false { println!("  💾 检查点已保存 (step {})", step); }
+                        }
+                        StreamEvent::Complete(_) => {}
                     }
                 }
-                AgentEvent::Final(answer) => {
-                    println!("{}💡 最终回答:{}\n{}", COLOR_GREEN, COLOR_RESET, answer);
-                }
             }
-        }
-
-        // 等待任务完成
-        match handle.await? {
-            Ok(_) => {}
             Err(e) => {
-                eprintln!("{}❌ 发生错误: {}{}", COLOR_RED, e, COLOR_RESET);
+                eprintln!("{}❌ 执行错误: {}{}", COLOR_RED, e, COLOR_RESET);
             }
         }
 
-        println!("{}============================================================{}", COLOR_GREEN, COLOR_RESET);
-        println!();
+        println!("{}============================================================{}\n", COLOR_GREEN, COLOR_RESET);
     }
 
     Ok(())
