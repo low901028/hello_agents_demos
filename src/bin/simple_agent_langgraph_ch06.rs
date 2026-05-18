@@ -5,6 +5,8 @@ use dotenvy::dotenv;
 use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use std::io::{self, Read, Write};
+use std::borrow::Cow;
 use crate::simple_agent::simple_agent_client::HelloAgentsLLM;
 use crate::simple_agent::simple_agent_langgraph::lang_graph::{GraphState, Message, StreamEvent};
 use crate::simple_agent::simple_agent_langgraph::search_agent::{SearchAssistant, SearchState};
@@ -15,60 +17,6 @@ const COLOR_CYAN: &str = "\x1b[36m";
 const COLOR_YELLOW: &str = "\x1b[33m";
 const COLOR_GREEN: &str = "\x1b[32m";
 const COLOR_RED: &str = "\x1b[31m";
-
-use std::io::{self, Read, Write};
-
-/// 安全读取一行输入，支持非 UTF-8 字符
-fn read_line_lossy() -> Option<String> {
-    use std::io::Read;
-
-    let mut buffer = Vec::new();
-    let mut stdin = std::io::stdin().lock();
-
-    loop {
-        let mut byte = [0u8; 1];
-        match stdin.read_exact(&mut byte) {
-            Ok(()) => {
-                if byte[0] == b'\n' {
-                    break;
-                }
-                buffer.push(byte[0]);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                if buffer.is_empty() {
-                    return None;
-                }
-                break;
-            }
-            Err(e) => {
-                eprintln!("❌ 读取输入失败: {}", e);
-                return None;
-            }
-        }
-    }
-
-    if buffer.is_empty() {
-        return Some(String::new());
-    }
-
-    let lossy_string = String::from_utf8_lossy(&buffer);
-    let trimmed = lossy_string.trim().to_string();
-
-    if trimmed.is_empty() {
-        Some(String::new())
-    } else {
-        Some(trimmed)
-    }
-}
-
-/// 带提示词的安全输入
-fn prompt_input(prompt: &str) -> Option<String> {
-    print!("{}", prompt);
-    std::io::stdout().flush().ok()?;
-    read_line_lossy()
-}
-
-use std::borrow::Cow;
 
 pub fn read_input_cow(prompt: &str) -> io::Result<Cow<'static, str>> {
     print!("{}", prompt);
@@ -150,11 +98,6 @@ async fn main() -> Result<()> {
         // 读取用户输入
         let input = format!("{}🤔 您想了解什么: {}", COLOR_YELLOW, COLOR_RESET);
         let input = read_input_cow(input.as_ref())?.to_string();
-        // print!("{}🤔 您想了解什么: {}", COLOR_YELLOW, COLOR_RESET);
-        // let mut input = String::new();
-        // std::io::stdin().read_line(&mut input)?;
-        // let input = input.trim().to_string();
-        // let input = prompt_input(&input).unwrap_or_else(|| "".to_string());
 
         if input.is_empty() {
             continue;
