@@ -68,6 +68,45 @@ fn prompt_input(prompt: &str) -> Option<String> {
     read_line_lossy()
 }
 
+use std::borrow::Cow;
+
+pub fn read_input_cow(prompt: &str) -> io::Result<Cow<'static, str>> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut buffer = Vec::with_capacity(256);
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    for byte in handle.bytes() {
+        let b = byte?;
+        if b == b'\n' {
+            break;
+        }
+        buffer.push(b);
+    }
+
+    // 尝试高效转换
+    let trimmed = match str::from_utf8(&buffer) {
+        Ok(text) => {
+            let trimmed = text.trim();
+            if trimmed.len() == buffer.len() {
+                // 没有trim操作或全是ASCII，可以安全使用Cow::Borrowed
+                Cow::Owned(trimmed.to_string())
+            } else {
+                Cow::Owned(trimmed.to_string())
+            }
+        }
+        Err(e) => {
+            eprintln!("⚠️  警告：检测到非UTF-8字符: {}", e);
+            let valid = String::from_utf8_lossy(&buffer);
+            Cow::Owned(valid.trim().to_string())
+        }
+    };
+
+    Ok(trimmed)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -109,11 +148,13 @@ async fn main() -> Result<()> {
     let mut session_count = 0u32;
     loop {
         // 读取用户输入
-        print!("{}🤔 您想了解什么: {}", COLOR_YELLOW, COLOR_RESET);
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_string();
-        let input = prompt_input(&input).unwrap_or_else(|| "".to_string());
+        let input = format!("{}🤔 您想了解什么: {}", COLOR_YELLOW, COLOR_RESET);
+        let input = read_input_cow(input.as_ref())?.to_string();
+        // print!("{}🤔 您想了解什么: {}", COLOR_YELLOW, COLOR_RESET);
+        // let mut input = String::new();
+        // std::io::stdin().read_line(&mut input)?;
+        // let input = input.trim().to_string();
+        // let input = prompt_input(&input).unwrap_or_else(|| "".to_string());
 
         if input.is_empty() {
             continue;
