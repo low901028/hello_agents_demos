@@ -1,8 +1,8 @@
 [package]
-name = "axum-demos"
+name = "hello_agents_demos"
 version = "0.1.0"
 edition = "2024"
-description = "rust agent learn; helloagents; agent demos"
+description = "rust agent learn; hello agents; agent demos"
 
 [dependencies]
 axum = {version = "0.8", features = []}
