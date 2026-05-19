@@ -147,7 +147,7 @@ mod tests {
                 "items": [
                     {
                         "title": "英伟达最新GPU",
-                        "url": "https://example.com",
+                        "url": "https://examples.com",
                         "content": "RTX 4090 是目前最强的消费级GPU"
                     },
                     {
