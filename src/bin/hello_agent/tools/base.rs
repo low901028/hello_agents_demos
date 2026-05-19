@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::hello_agent::tools::error::ToolErrorCode;
 use crate::hello_agent::tools::response::ToolResponse;
 
 /// 工具参数定义
