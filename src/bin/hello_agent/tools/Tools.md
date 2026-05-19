@@ -1,0 +1,1 @@
+在hello agents里，除了关键的agent，万物皆是“tool”
