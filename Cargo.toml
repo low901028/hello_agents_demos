@@ -2,6 +2,7 @@
 name = "axum-demos"
 version = "0.1.0"
 edition = "2024"
+description = "rust agent learn; helloagents; agent demos"
 
 [dependencies]
 axum = {version = "0.8", features = []}

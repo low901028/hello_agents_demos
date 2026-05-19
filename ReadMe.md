@@ -8,3 +8,6 @@ LLM以deepseek为主，搜索引擎api以百度千帆为主[按需配置调整�
 ```python
 key(见代码中使用)=value(对应的开发者平台提供的api key)
 ```
+
+### 关于Hello Agents
+在hello_agent模块下，[Hello Agent的rust版本实现](src/bin/hello_agent/ReadMe.md)
