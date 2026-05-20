@@ -1,50 +1,52 @@
+use crate::hello_agent::tools::response::{ToolResponse, ToolStatus};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::hello_agent::tools::response::{ToolResponse, ToolStatus};
-
-/// 熔断器
+#[derive(Debug, Clone)]
 pub struct CircuitBreaker {
-    failure_threshold: u32,
+    failure_threshold: usize,
     recovery_timeout: Duration,
     enabled: bool,
-    failure_counts: HashMap<String, u32>,
+    failure_counts: HashMap<String, usize>,
     open_timestamps: HashMap<String, Instant>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerStatus {
+    pub state: String,
+    pub failure_count: usize,
+    pub recover_in_seconds: usize,
+}
+
 impl CircuitBreaker {
-    pub fn new(failure_threshold: u32, recovery_timeout: u64, enabled: bool) -> Self {
-        Self {
+    pub fn new(failure_threshold: usize, recovery_timeout_secs: u64, enabled: bool) -> Self {
+        CircuitBreaker {
             failure_threshold,
-            recovery_timeout: Duration::from_secs(recovery_timeout),
+            recovery_timeout: Duration::from_secs(recovery_timeout_secs),
             enabled,
             failure_counts: HashMap::new(),
             open_timestamps: HashMap::new(),
         }
     }
 
-    /// 检查工具是否被熔断
-    pub fn is_open(&self, tool_name: &str) -> bool {
+    pub fn is_open(&mut self, tool_name: &str) -> bool {
         if !self.enabled {
             return false;
         }
-
         if let Some(&open_time) = self.open_timestamps.get(tool_name) {
             if open_time.elapsed() > self.recovery_timeout {
-                return false; // 超时自动恢复
+                self.close(tool_name);
+                return false;
             }
             return true;
         }
-
         false
     }
 
-    /// 记录执行结果
     pub fn record_result(&mut self, tool_name: &str, response: &ToolResponse) {
         if !self.enabled {
             return;
         }
-
         if response.status == ToolStatus::Error {
             self.on_failure(tool_name);
         } else {
@@ -53,12 +55,14 @@ impl CircuitBreaker {
     }
 
     fn on_failure(&mut self, tool_name: &str) {
-        let count = self.failure_counts.entry(tool_name.to_string()).or_insert(0);
+        let count = self
+            .failure_counts
+            .entry(tool_name.to_string())
+            .or_insert(0);
         *count += 1;
-
         if *count >= self.failure_threshold {
-            self.open_timestamps.insert(tool_name.to_string(), Instant::now());
-            println!("🔴 Circuit Breaker: 工具 '{}' 已熔断（连续 {} 次失败）", tool_name, *count);
+            self.open_timestamps
+                .insert(tool_name.to_string(), Instant::now());
         }
     }
 
@@ -66,40 +70,39 @@ impl CircuitBreaker {
         self.failure_counts.insert(tool_name.to_string(), 0);
     }
 
-    /// 手动开启熔断
-    pub fn open(&mut self, tool_name: &str) {
-        if !self.enabled {
-            return;
-        }
-        self.open_timestamps.insert(tool_name.to_string(), Instant::now());
-    }
-
-    /// 关闭熔断
     pub fn close(&mut self, tool_name: &str) {
         self.failure_counts.insert(tool_name.to_string(), 0);
         self.open_timestamps.remove(tool_name);
     }
 
-    /// 获取状态
-    pub fn get_status(&self, tool_name: &str) -> serde_json::Value {
+    pub fn get_status(&self, tool_name: &str) -> CircuitBreakerStatus {
         if let Some(&open_time) = self.open_timestamps.get(tool_name) {
             let elapsed = open_time.elapsed();
-            let recover_in = if elapsed > self.recovery_timeout {
-                0
+            if elapsed > self.recovery_timeout {
+                CircuitBreakerStatus {
+                    state: "closed".into(),
+                    failure_count: *self.failure_counts.get(tool_name).unwrap_or(&0),
+                    recover_in_seconds: 0,
+                }
             } else {
-                (self.recovery_timeout - elapsed).as_secs()
-            };
-
-            serde_json::json!({
-                "state": "open",
-                "failure_count": self.failure_counts.get(tool_name).copied().unwrap_or(0),
-                "recover_in_seconds": recover_in,
-            })
+                CircuitBreakerStatus {
+                    state: "open".into(),
+                    failure_count: *self.failure_counts.get(tool_name).unwrap_or(&0),
+                    recover_in_seconds: (self.recovery_timeout - elapsed).as_secs() as usize,
+                }
+            }
         } else {
-            serde_json::json!({
-                "state": "closed",
-                "failure_count": self.failure_counts.get(tool_name).copied().unwrap_or(0),
-            })
+            CircuitBreakerStatus {
+                state: "closed".into(),
+                failure_count: *self.failure_counts.get(tool_name).unwrap_or(&0),
+                recover_in_seconds: 0,
+            }
         }
+    }
+}
+
+impl Default for CircuitBreaker {
+    fn default() -> Self {
+        CircuitBreaker::new(3, 300, true)
     }
 }

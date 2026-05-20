@@ -1,159 +1,117 @@
-use std::env;
-use std::sync::Mutex;
-
-use tokio::sync::mpsc;
-
-use crate::hello_agent::core::adapter::{create_adapter, base::BaseLLMAdapter};
 use crate::hello_agent::core::exceptions::HelloAgentsError;
-use crate::hello_agent::core::message::Message;
-use crate::hello_agent::core::response::{LLMResponse, LLMToolResponse, StreamStats};
-use crate::hello_agent::core::adapter::base::ToolChoice;
+use crate::hello_agent::core::llm_adapters::{BaseLlmAdapter, create_adapter};
+use crate::hello_agent::core::llm_response::{LlmResponse, LlmToolResponse, StreamStats};
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::env;
+use std::sync::Arc;
+use dotenvy::dotenv;
 
-/// HelloAgents 统一 LLM 客户端
-pub struct HelloAgentsLLM {
+#[derive(Clone)]
+pub struct HelloAgentsLlm {
     pub model: String,
-    pub api_key: String,
-    pub base_url: String,
-    pub temperature: f64,
-    pub max_tokens: Option<u32>,
-    pub timeout: u64,
-    adapter: Box<dyn BaseLLMAdapter>,
-    pub last_call_stats: Mutex<Option<StreamStats>>,
+    temperature: f64,
+    max_tokens: Option<usize>,
+    timeout: usize,
+    adapter: Arc<dyn BaseLlmAdapter>,
+    pub last_call_stats: Arc<RwLock<Option<StreamStats>>>,
 }
 
-impl HelloAgentsLLM {
-    /// 创建 LLM 客户端，参数优先级：传入参数 > 环境变量
+impl HelloAgentsLlm {
     pub fn new(
-        model: Option<String>,
-        api_key: Option<String>,
-        base_url: Option<String>,
-        temperature: Option<f64>,
-        max_tokens: Option<u32>,
-        timeout: Option<u64>,
+        model: Option<&str>,
+        api_key: Option<&str>,
+        base_url: Option<&str>,
+        temperature: f64,
+        max_tokens: Option<usize>,
+        timeout: Option<usize>,
     ) -> Result<Self, HelloAgentsError> {
-        dotenvy::dotenv().ok();
+        dotenv().ok();
 
         let model = model
+            .map(|s| s.to_string())
             .or_else(|| env::var("LLM_MODEL_ID").ok())
-            .ok_or_else(|| HelloAgentsError::Config("必须提供模型名称".into()))?;
-
+            .ok_or_else(|| HelloAgentsError::config("必须提供模型名称"))?;
         let api_key = api_key
+            .map(|s| s.to_string())
             .or_else(|| env::var("LLM_API_KEY").ok())
-            .ok_or_else(|| HelloAgentsError::Config("必须提供API密钥".into()))?;
-
+            .ok_or_else(|| HelloAgentsError::config("必须提供API密钥"))?;
         let base_url = base_url
+            .map(|s| s.to_string())
             .or_else(|| env::var("LLM_BASE_URL").ok())
-            .ok_or_else(|| HelloAgentsError::Config("必须提供服务地址".into()))?;
-
-        let timeout = timeout
-            .or_else(|| env::var("LLM_TIMEOUT").ok().and_then(|v| v.parse().ok()))
-            .unwrap_or(60);
-
-        let temperature = temperature.unwrap_or(0.7);
-
-        let adapter = create_adapter(api_key.clone(), Some(base_url.clone()), timeout, model.clone());
-
-        Ok(Self {
+            .ok_or_else(|| HelloAgentsError::config("必须提供服务地址"))?;
+        let timeout = timeout.unwrap_or_else(|| {
+            env::var("LLM_TIMEOUT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60)
+        });
+        if model.is_empty() || api_key.is_empty() {
+            return Err(HelloAgentsError::config("模型名称和API密钥不能为空"));
+        }
+        let adapter = create_adapter(&api_key, &base_url, timeout, &model)?;
+        Ok(HelloAgentsLlm {
             model,
-            api_key,
-            base_url,
             temperature,
             max_tokens,
             timeout,
-            adapter,
-            last_call_stats: Mutex::new(None),
+            adapter: adapter.into(),
+            last_call_stats: Arc::new(RwLock::new(None)),
         })
     }
 
-    /// 获取最后一次流式统计
-    pub fn last_call_stats(&self) -> Option<StreamStats> {
-        self.last_call_stats.lock().unwrap().clone()
-    }
-
-    /// 流式调用（主要方法）
-    pub async fn think(
+    pub fn invoke(
         &self,
-        messages: &[Message],
-        temperature: Option<f64>,
-    ) -> Result<mpsc::UnboundedReceiver<String>, HelloAgentsError> {
-        println!("🧠 正在调用 {} 模型...", self.model);
-
-        let temp = temperature.unwrap_or(self.temperature);
-        match self.adapter.stream_invoke(messages, Some(temp), self.max_tokens).await {
-            Ok(rx) => {
-                println!("✅ 大语言模型响应成功:");
-                Ok(rx)
-            }
-            Err(e) => {
-                println!("❌ 调用LLM API时发生错误: {}", e);
-                Err(e)
-            }
-        }
-    }
-
-    /// 非流式调用
-    pub async fn invoke(
-        &self,
-        messages: &[Message],
-        temperature: Option<f64>,
-        max_tokens: Option<u32>,
-    ) -> Result<LLMResponse, HelloAgentsError> {
-        let temp = temperature.unwrap_or(self.temperature);
-        let mt = max_tokens.or(self.max_tokens);
-        self.adapter.invoke(messages, Some(temp), mt).await
-    }
-
-    /// 流式调用别名
-    pub async fn stream_invoke(
-        &self,
-        messages: &[Message],
-        temperature: Option<f64>,
-    ) -> Result<mpsc::UnboundedReceiver<String>, HelloAgentsError> {
-        self.think(messages, temperature).await
-    }
-
-    /// 工具调用
-    pub async fn invoke_with_tools(
-        &self,
-        messages: &[Message],
-        tools: &[serde_json::Value],
-        tool_choice: &ToolChoice,
-        temperature: Option<f64>,
-    ) -> Result<LLMToolResponse, HelloAgentsError> {
-        let temp = temperature.unwrap_or(self.temperature);
+        messages: &[HashMap<String, serde_json::Value>],
+    ) -> Result<LlmResponse, HelloAgentsError> {
         self.adapter
-            .invoke_with_tools(messages, tools, tool_choice, Some(temp), self.max_tokens)
+            .invoke(messages, self.temperature, self.max_tokens)
+    }
+
+    pub fn stream_invoke(
+        &self,
+        messages: &[HashMap<String, serde_json::Value>],
+    ) -> Result<Box<dyn Iterator<Item = Result<String, HelloAgentsError>> + Send>, HelloAgentsError>
+    {
+        self.adapter
+            .stream_invoke(messages, self.temperature, self.max_tokens)
+    }
+
+    pub async fn astream_invoke(
+        &self,
+        messages: &[HashMap<String, serde_json::Value>],
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<String, HelloAgentsError>>, HelloAgentsError>
+    {
+        self.adapter
+            .astream_invoke(messages, self.temperature, self.max_tokens)
             .await
     }
 
-    /// 异步非流式调用
     pub async fn ainvoke(
         &self,
-        messages: &[Message],
-        temperature: Option<f64>,
-        max_tokens: Option<u32>,
-    ) -> Result<LLMResponse, HelloAgentsError> {
-        self.invoke(messages, temperature, max_tokens).await
+        messages: &[HashMap<String, serde_json::Value>],
+    ) -> Result<LlmResponse, HelloAgentsError> {
+        self.adapter
+            .ainvoke(messages, self.temperature, self.max_tokens)
+            .await
     }
 
-    /// 异步流式调用
-    pub async fn astream_invoke(
+    pub fn invoke_with_tools(
         &self,
-        messages: &[Message],
-        temperature: Option<f64>,
-    ) -> Result<mpsc::UnboundedReceiver<String>, HelloAgentsError> {
-        let temp = temperature.unwrap_or(self.temperature);
-        self.adapter.astream_invoke(messages, Some(temp), self.max_tokens).await
+        messages: &[HashMap<String, serde_json::Value>],
+        tools: &[HashMap<String, serde_json::Value>],
+        tool_choice: &str,
+    ) -> Result<LlmToolResponse, HelloAgentsError> {
+        self.adapter.invoke_with_tools(
+            messages,
+            tools,
+            tool_choice,
+            self.temperature,
+            self.max_tokens,
+        )
     }
 
-    /// 异步工具调用
-    pub async fn ainvoke_with_tools(
-        &self,
-        messages: &[Message],
-        tools: &[serde_json::Value],
-        tool_choice: &ToolChoice,
-        temperature: Option<f64>,
-    ) -> Result<LLMToolResponse, HelloAgentsError> {
-        self.invoke_with_tools(messages, tools, tool_choice, temperature).await
+    pub fn get_last_stats(&self) -> Option<StreamStats> {
+        self.last_call_stats.read().clone()
     }
 }

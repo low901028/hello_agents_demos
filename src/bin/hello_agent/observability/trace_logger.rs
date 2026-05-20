@@ -1,156 +1,132 @@
 use chrono::Utc;
+use regex::Regex;
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-/// 双格式 Trace 记录器
 pub struct TraceLogger {
     output_dir: PathBuf,
-    session_id: String,
+    pub session_id: String,
     sanitize: bool,
-    html_include_raw: bool,
-    events: Vec<serde_json::Value>,
-    jsonl_file: Option<File>,
-    html_file: Option<File>,
+    jsonl_writer: Option<BufWriter<File>>,
+    html_writer: Option<BufWriter<File>>,
+    pub events: Vec<serde_json::Value>,
 }
 
 impl TraceLogger {
-    pub fn new(output_dir: impl Into<PathBuf>, sanitize: bool, html_include_raw: bool) -> Self {
-        let output_dir = output_dir.into();
-        fs::create_dir_all(&output_dir).ok();
-
-        let session_id = Self::generate_session_id();
-
-        let mut logger = Self {
-            output_dir,
-            session_id,
+    pub fn new(
+        output_dir: &str,
+        sanitize: bool,
+        _html_include_raw: bool,
+    ) -> Result<Self, std::io::Error> {
+        let dir = PathBuf::from(output_dir);
+        fs::create_dir_all(&dir)?;
+        let sid = format!(
+            "s-{}-{}",
+            Utc::now().format("%Y%m%d-%H%M%S"),
+            &Uuid::new_v4().to_string()[..4]
+        );
+        let jp = dir.join(format!("trace-{}.jsonl", sid));
+        let hp = dir.join(format!("trace-{}.html", sid));
+        let jw = BufWriter::new(File::create(&jp)?);
+        let hw = BufWriter::new(File::create(&hp)?);
+        let mut logger = TraceLogger {
+            output_dir: dir,
+            session_id: sid,
             sanitize,
-            html_include_raw,
+            jsonl_writer: Some(jw),
+            html_writer: Some(hw),
             events: Vec::new(),
-            jsonl_file: None,
-            html_file: None,
         };
+        logger.write_html_header()?;
+        Ok(logger)
+    }
 
-        // 打开文件
-        logger.jsonl_file = Some(
-            File::create(logger.jsonl_path()).unwrap(),
+    pub fn get_session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn log_event(
+        &mut self,
+        event: &str,
+        payload: &HashMap<String, serde_json::Value>,
+        step: Option<usize>,
+    ) {
+        let mut obj = serde_json::Map::new();
+        obj.insert("ts".into(), serde_json::json!(Utc::now().to_rfc3339()));
+        obj.insert("session_id".into(), serde_json::json!(&self.session_id));
+        obj.insert("event".into(), serde_json::json!(event));
+        obj.insert(
+            "payload".into(),
+            serde_json::to_value(payload).unwrap_or_default(),
         );
-        logger.html_file = Some(
-            File::create(logger.html_path()).unwrap(),
-        );
-
-        logger.write_html_header();
-        logger
-    }
-
-    fn generate_session_id() -> String {
-        let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
-        let suffix = Uuid::new_v4().to_string()[..4].to_string();
-        format!("s-{}-{}", timestamp, suffix)
-    }
-
-    fn jsonl_path(&self) -> PathBuf {
-        self.output_dir.join(format!("trace-{}.jsonl", self.session_id))
-    }
-
-    fn html_path(&self) -> PathBuf {
-        self.output_dir.join(format!("trace-{}.html", self.session_id))
-    }
-
-    /// 记录事件
-    pub fn log_event(&mut self, event: &str, payload: serde_json::Value) {
-        let mut event_obj = serde_json::json!({
-            "ts": Utc::now().to_rfc3339(),
-            "session_id": self.session_id,
-            "event": event,
-            "payload": payload,
-        });
-
+        if let Some(s) = step {
+            obj.insert("step".into(), serde_json::json!(s));
+        }
+        let mut val = serde_json::Value::Object(obj);
         if self.sanitize {
-            event_obj = Self::sanitize_event(event_obj);
+            val = Self::sanitize(&val);
         }
-
-        self.events.push(event_obj.clone());
-
-        // 写入 JSONL
-        if let Some(ref mut file) = self.jsonl_file {
-            writeln!(file, "{}", serde_json::to_string(&event_obj).unwrap_or_default()).ok();
+        self.events.push(val.clone());
+        if let Some(ref mut w) = self.jsonl_writer {
+            let _ = writeln!(w, "{}", serde_json::to_string(&val).unwrap_or_default());
+            let _ = w.flush();
         }
-
-        // 写入 HTML 事件
-        self.write_html_event(&event_obj);
+        self.write_html_event(&val);
     }
 
-    fn sanitize_event(mut event: serde_json::Value) -> serde_json::Value {
-        if let Some(payload) = event.get_mut("payload") {
-            *payload = Self::sanitize_value(payload.clone());
-        }
-        event
+    fn sanitize(val: &serde_json::Value) -> serde_json::Value {
+        let s = serde_json::to_string(val).unwrap_or_default();
+        let s = Regex::new(r"sk-[a-zA-Z0-9]+")
+            .unwrap()
+            .replace_all(&s, "sk-***")
+            .to_string();
+        serde_json::from_str(&s).unwrap_or_else(|_| val.clone())
     }
 
-    fn sanitize_value(value: serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::String(s) => {
-                let s = s.replace(
-                    |c: char| c.is_ascii_alphanumeric() || c == '-',
-                    "",
-                );
-                serde_json::Value::String(s)
-            }
-            serde_json::Value::Object(map) => {
-                serde_json::Value::Object(
-                    map.into_iter()
-                        .map(|(k, v)| (k, Self::sanitize_value(v)))
-                        .collect(),
-                )
-            }
-            serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.into_iter().map(Self::sanitize_value).collect())
-            }
-            other => other,
-        }
+    pub fn finalize(&mut self) {
+        let stats = self.compute_stats();
+        self.write_html_footer(&stats);
+        self.jsonl_writer = None;
+        self.html_writer = None;
+        println!("✅ Trace已保存: trace-{}", self.session_id);
     }
 
-    fn write_html_header(&mut self) {
-        let header = format!(
-            r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Trace: {}</title></head><body><h1>Trace Session: {}</h1>"#,
-            self.session_id, self.session_id
-        );
-        if let Some(ref mut file) = self.html_file {
-            write!(file, "{}", header).ok();
+    fn compute_stats(&self) -> HashMap<String, serde_json::Value> {
+        let mut s = HashMap::new();
+        s.insert("total_events".into(), serde_json::json!(self.events.len()));
+        s
+    }
+
+    fn write_html_header(&mut self) -> std::io::Result<()> {
+        if let Some(ref mut w) = self.html_writer {
+            w.write_all(format!("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Trace:{}</title></head><body><h1>Trace:{}</h1>", self.session_id, self.session_id).as_bytes())?;
+            w.flush()?;
         }
+        Ok(())
     }
 
     fn write_html_event(&mut self, event: &serde_json::Value) {
-        let event_type = event["event"].as_str().unwrap_or("unknown");
-        let html = format!(
-            "<div class='event'><strong>{}</strong>: <pre>{}</pre></div>",
-            event_type,
-            serde_json::to_string_pretty(&event["payload"]).unwrap_or_default()
-        );
-        if let Some(ref mut file) = self.html_file {
-            write!(file, "{}", html).ok();
+        if let Some(ref mut w) = self.html_writer {
+            let _ = writeln!(
+                w,
+                "<pre>{}</pre>",
+                serde_json::to_string_pretty(event).unwrap_or_default()
+            );
+            let _ = w.flush();
         }
     }
 
-    fn write_html_footer(&mut self) {
-        if let Some(ref mut file) = self.html_file {
-            write!(file, "</body></html>").ok();
+    fn write_html_footer(&mut self, stats: &HashMap<String, serde_json::Value>) {
+        if let Some(ref mut w) = self.html_writer {
+            let _ = writeln!(
+                w,
+                "<hr><h2>统计</h2><pre>{}</pre></body></html>",
+                serde_json::to_string_pretty(stats).unwrap_or_default()
+            );
+            let _ = w.flush();
         }
-    }
-
-    /// 完成记录
-    pub fn finalize(&mut self) {
-        self.write_html_footer();
-        println!("✅ Trace 已保存:");
-        println!("   JSONL: {}", self.jsonl_path().display());
-        println!("   HTML:  {}", self.html_path().display());
-    }
-}
-
-impl Drop for TraceLogger {
-    fn drop(&mut self) {
-        self.write_html_footer();
     }
 }

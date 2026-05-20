@@ -1,258 +1,193 @@
 use crate::hello_agent::core::message::Message;
-use crate::hello_agent::context::token_counter::TokenCounter;
 use chrono::{DateTime, Utc};
+use std::collections::{HashMap, HashSet};
 
-/// 上下文信息包
 #[derive(Debug, Clone)]
 pub struct ContextPacket {
     pub content: String,
     pub timestamp: DateTime<Utc>,
-    pub metadata: serde_json::Value,
+    pub metadata: HashMap<String, serde_json::Value>,
     pub token_count: usize,
     pub relevance_score: f64,
 }
 
 impl ContextPacket {
-    pub fn new(content: impl Into<String>) -> Self {
-        let content = content.into();
-        let token_count = TokenCounter::count_text(&content);
-        Self {
-            content,
+    pub fn new(content: impl Into<String>, metadata: HashMap<String, serde_json::Value>) -> Self {
+        let c = content.into();
+        ContextPacket {
+            token_count: c.len() / 4,
+            content: c,
             timestamp: Utc::now(),
-            metadata: serde_json::json!({}),
-            token_count,
+            metadata,
             relevance_score: 0.0,
         }
     }
-
-    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
-        self.metadata = metadata;
-        self
-    }
 }
 
-/// 上下文构建配置
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
     pub max_tokens: usize,
     pub reserve_ratio: f64,
     pub min_relevance: f64,
-    pub enable_mmr: bool,
-    pub mmr_lambda: f64,
     pub enable_compression: bool,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
-        Self {
+        ContextConfig {
             max_tokens: 8000,
             reserve_ratio: 0.15,
             min_relevance: 0.3,
-            enable_mmr: true,
-            mmr_lambda: 0.7,
             enable_compression: true,
         }
     }
 }
-
 impl ContextConfig {
-    pub fn get_available_tokens(&self) -> usize {
+    pub fn available_tokens(&self) -> usize {
         (self.max_tokens as f64 * (1.0 - self.reserve_ratio)) as usize
     }
 }
 
-/// 上下文构建器 - GSSC 流水线
 pub struct ContextBuilder {
     config: ContextConfig,
 }
 
 impl ContextBuilder {
     pub fn new(config: Option<ContextConfig>) -> Self {
-        Self {
+        ContextBuilder {
             config: config.unwrap_or_default(),
         }
     }
-
-    /// 构建完整上下文
     pub fn build(
         &self,
-        user_query: &str,
-        conversation_history: Option<&[Message]>,
-        system_instructions: Option<&str>,
+        query: &str,
+        history: Option<&[Message]>,
+        system: Option<&str>,
+        extra: Option<Vec<ContextPacket>>,
     ) -> String {
-        // 1. Gather
-        let packets = self.gather(user_query, conversation_history, system_instructions);
-
-        // 2. Select
-        let selected = self.select(&packets, user_query);
-
-        // 3. Structure
-        let structured = self.structure(&selected, user_query, system_instructions);
-
-        // 4. Compress
+        let packets = self.gather(history, system, extra);
+        let selected = self.select(packets, query);
+        let structured = self.structure(&selected, query);
         self.compress(&structured)
     }
-
     fn gather(
         &self,
-        user_query: &str,
-        conversation_history: Option<&[Message]>,
-        system_instructions: Option<&str>,
+        history: Option<&[Message]>,
+        system: Option<&str>,
+        extra: Option<Vec<ContextPacket>>,
     ) -> Vec<ContextPacket> {
         let mut packets = Vec::new();
-
-        // P0: 系统指令
-        if let Some(instructions) = system_instructions {
-            packets.push(
-                ContextPacket::new(instructions)
-                    .with_metadata(serde_json::json!({"type": "instructions"})),
-            );
+        if let Some(sys) = system {
+            let mut meta = HashMap::new();
+            meta.insert("type".into(), serde_json::json!("instructions"));
+            packets.push(ContextPacket::new(sys, meta));
         }
-
-        // P3: 对话历史
-        if let Some(history) = conversation_history {
-            let recent = if history.len() > 10 {
-                &history[history.len() - 10..]
+        if let Some(hist) = history {
+            let recent = if hist.len() > 10 {
+                &hist[hist.len() - 10..]
             } else {
-                history
+                hist
             };
-            let history_text: String = recent
+            let text: String = recent
                 .iter()
-                .map(|msg| format!("[{}] {}", msg.role.as_str(), msg.content))
+                .map(|m| format!("[{}]{}", m.role.as_str(), m.content))
                 .collect::<Vec<_>>()
                 .join("\n");
-
-            packets.push(
-                ContextPacket::new(history_text)
-                    .with_metadata(serde_json::json!({"type": "history", "count": recent.len()})),
-            );
+            let mut meta = HashMap::new();
+            meta.insert("type".into(), serde_json::json!("history"));
+            packets.push(ContextPacket::new(text, meta));
         }
-
+        if let Some(e) = extra {
+            packets.extend(e);
+        }
         packets
     }
-
-    fn select(&self, packets: &[ContextPacket], user_query: &str) -> Vec<ContextPacket> {
-        let user_query_lower = user_query.to_lowercase();
-        let query_tokens: std::collections::HashSet<&str> =
-            user_query_lower.split_whitespace().collect();
-
+    fn select(&self, packets: Vec<ContextPacket>, query: &str) -> Vec<ContextPacket> {
+        let available = self.config.available_tokens();
         let mut scored: Vec<(f64, ContextPacket)> = packets
-            .iter()
-            .map(|p| {
-                let content_lower = p.content.to_lowercase();
-                let content_tokens: std::collections::HashSet<&str> =
-                    content_lower.split_whitespace().collect();
-                let overlap = query_tokens.intersection(&content_tokens).count();
-                let relevance = if !query_tokens.is_empty() {
-                    overlap as f64 / query_tokens.len() as f64
-                } else {
-                    0.0
-                };
-                (relevance, p.clone())
+            .into_iter()
+            .map(|mut p| {
+                p.relevance_score = Self::relevance(&p.content, query);
+                let r = Self::recency(p.timestamp);
+                (0.7 * p.relevance_score + 0.3 * r, p)
             })
             .collect();
-
-        // 系统指令固定纳入
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let mut selected = Vec::new();
-        let available = self.config.get_available_tokens();
-        let mut used_tokens = 0;
-
-        for (_, p) in scored.iter().filter(|(_, p)| {
-            p.metadata.get("type").and_then(|v| v.as_str()) == Some("instructions")
-        }) {
-            if used_tokens + p.token_count <= available {
-                used_tokens += p.token_count;
-                selected.push(p.clone());
-            }
-        }
-
-        // 按分数加入其余
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let mut used = 0;
         for (_, p) in scored {
             if p.metadata.get("type").and_then(|v| v.as_str()) == Some("instructions") {
-                continue;
+                if used + p.token_count <= available {
+                    used += p.token_count;
+                    selected.push(p);
+                }
+            } else if p.relevance_score >= self.config.min_relevance
+                && used + p.token_count <= available
+            {
+                used += p.token_count;
+                selected.push(p);
             }
-            if used_tokens + p.token_count > available {
-                continue;
-            }
-            used_tokens += p.token_count;
-            selected.push(p);
         }
-
         selected
     }
+    fn relevance(content: &str, query: &str) -> f64 {
+        let qt: HashSet<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
 
-    fn structure(
-        &self,
-        selected: &[ContextPacket],
-        user_query: &str,
-        system_instructions: Option<&str>,
-    ) -> String {
+        if qt.is_empty() {
+            return 0.0;
+        }
+
+        let ct: HashSet<String> = content
+            .to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+
+        qt.intersection(&ct).count() as f64 / qt.len() as f64
+    }
+    fn recency(ts: DateTime<Utc>) -> f64 {
+        (-(Utc::now() - ts).num_seconds().max(0) as f64 / 3600.0).exp()
+    }
+    fn structure(&self, packets: &[ContextPacket], query: &str) -> String {
         let mut sections = Vec::new();
-
-        // Role & Policies
-        let p0: Vec<_> = selected
+        let inst: Vec<&str> = packets
             .iter()
             .filter(|p| p.metadata.get("type").and_then(|v| v.as_str()) == Some("instructions"))
+            .map(|p| p.content.as_str())
             .collect();
-        if !p0.is_empty() {
-            let role_section = format!(
-                "[Role & Policies]\n{}",
-                p0.iter().map(|p| p.content.as_str()).collect::<Vec<_>>().join("\n")
-            );
-            sections.push(role_section);
+        if !inst.is_empty() {
+            sections.push(format!("[Role & Policies]\n{}", inst.join("\n")));
         }
-
-        // Task
-        sections.push(format!("[Task]\n用户问题：{}", user_query));
-
-        // Context (history)
-        let p3: Vec<_> = selected
+        sections.push(format!("[Task]\n用户问题：{}", query));
+        let hist: Vec<&str> = packets
             .iter()
             .filter(|p| p.metadata.get("type").and_then(|v| v.as_str()) == Some("history"))
+            .map(|p| p.content.as_str())
             .collect();
-        if !p3.is_empty() {
-            sections.push(format!(
-                "[Context]\n{}",
-                p3.iter().map(|p| p.content.as_str()).collect::<Vec<_>>().join("\n")
-            ));
+        if !hist.is_empty() {
+            sections.push(format!("[Context]\n{}", hist.join("\n")));
         }
-
-        // Output
-        sections.push(
-            "[Output]\n请按以下格式回答：\n1. 结论\n2. 依据\n3. 风险与假设\n4. 下一步建议"
-                .to_string(),
-        );
-
+        sections.push("[Output]\n1.结论\n2.依据\n3.风险\n4.下一步".into());
         sections.join("\n\n")
     }
-
-    fn compress(&self, context: &str) -> String {
-        if !self.config.enable_compression {
-            return context.to_string();
+    fn compress(&self, ctx: &str) -> String {
+        if !self.config.enable_compression || ctx.len() / 4 <= self.config.available_tokens() {
+            return ctx.into();
         }
-
-        let current_tokens = TokenCounter::count_text(context);
-        let available = self.config.get_available_tokens();
-
-        if current_tokens <= available {
-            return context.to_string();
-        }
-
-        // 简单截断
-        let lines: Vec<&str> = context.lines().collect();
-        let mut compressed = Vec::new();
+        let mut lines = Vec::new();
         let mut used = 0;
-
-        for line in lines {
-            let line_tokens = TokenCounter::count_text(line);
-            if used + line_tokens > available {
+        for l in ctx.lines() {
+            let t = l.len() / 4;
+            if used + t > self.config.available_tokens() {
                 break;
             }
-            compressed.push(line);
-            used += line_tokens;
+            lines.push(l);
+            used += t;
         }
-
-        compressed.join("\n")
+        lines.join("\n")
     }
 }

@@ -1,10 +1,11 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-/// Agent 生命周期事件类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
     #[serde(rename = "agent_start")]
@@ -40,25 +41,30 @@ pub enum EventType {
 impl EventType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::AgentStart => "agent_start",
-            Self::AgentFinish => "agent_finish",
-            Self::AgentError => "agent_error",
-            Self::StepStart => "step_start",
-            Self::StepFinish => "step_finish",
-            Self::LlmStart => "llm_start",
-            Self::LlmChunk => "llm_chunk",
-            Self::LlmFinish => "llm_finish",
-            Self::ToolCall => "tool_call",
-            Self::ToolResult => "tool_result",
-            Self::ToolError => "tool_error",
-            Self::Thinking => "thinking",
-            Self::Reflection => "reflection",
-            Self::Plan => "plan",
+            EventType::AgentStart => "agent_start",
+            EventType::AgentFinish => "agent_finish",
+            EventType::AgentError => "agent_error",
+            EventType::StepStart => "step_start",
+            EventType::StepFinish => "step_finish",
+            EventType::LlmStart => "llm_start",
+            EventType::LlmChunk => "llm_chunk",
+            EventType::LlmFinish => "llm_finish",
+            EventType::ToolCall => "tool_call",
+            EventType::ToolResult => "tool_result",
+            EventType::ToolError => "tool_error",
+            EventType::Thinking => "thinking",
+            EventType::Reflection => "reflection",
+            EventType::Plan => "plan",
         }
     }
 }
 
-/// Agent 生命周期事件
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {
     #[serde(rename = "type")]
@@ -70,76 +76,58 @@ pub struct AgentEvent {
 }
 
 impl AgentEvent {
-    pub fn new(event_type: EventType, agent_name: impl Into<String>) -> Self {
-        Self {
+    pub fn create(
+        event_type: EventType,
+        agent_name: impl Into<String>,
+        data: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        AgentEvent {
             event_type,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs_f64(),
+            timestamp: Utc::now().timestamp_millis() as f64 / 1000.0,
             agent_name: agent_name.into(),
-            data: HashMap::new(),
+            data,
         }
     }
-
-    pub fn with_data(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
-        self.data.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn to_dict(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or_default()
+    pub fn simple(event_type: EventType, agent_name: impl Into<String>) -> Self {
+        Self::create(event_type, agent_name, HashMap::new())
     }
 }
 
 impl fmt::Display for AgentEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "[{}] {} @ {:.2}: {:?}",
-            self.event_type.as_str(),
-            self.agent_name,
-            self.timestamp,
-            self.data
+            "[{}] {} @ {:.2}",
+            self.event_type, self.agent_name, self.timestamp
         )
     }
 }
 
-/// 生命周期钩子类型
-pub type LifecycleHook = Arc<dyn Fn(AgentEvent) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
-
-/// 执行上下文
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionContext {
     pub input_text: String,
     pub current_step: usize,
     pub total_tokens: usize,
+    #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
 impl ExecutionContext {
     pub fn new(input_text: impl Into<String>) -> Self {
-        Self {
+        ExecutionContext {
             input_text: input_text.into(),
             current_step: 0,
             total_tokens: 0,
             metadata: HashMap::new(),
         }
     }
-
     pub fn increment_step(&mut self) {
         self.current_step += 1;
     }
-
     pub fn add_tokens(&mut self, tokens: usize) {
         self.total_tokens += tokens;
     }
-
-    pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) {
-        self.metadata.insert(key.into(), value.into());
-    }
-
-    pub fn get_metadata(&self, key: &str) -> Option<&serde_json::Value> {
-        self.metadata.get(key)
-    }
 }
+
+pub type LifecycleHook =
+    Arc<dyn Fn(AgentEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;

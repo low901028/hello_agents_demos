@@ -1,157 +1,172 @@
-use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
-/// 会话存储器
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SessionStore {
     session_dir: PathBuf,
 }
 
 impl SessionStore {
-    pub fn new(session_dir: impl Into<PathBuf>) -> Result<Self> {
-        let dir = session_dir.into();
+    pub fn new(session_dir: &str) -> io::Result<Self> {
+        let dir = PathBuf::from(session_dir);
         fs::create_dir_all(&dir)?;
-        Ok(Self { session_dir: dir })
+        Ok(SessionStore { session_dir: dir })
     }
 
     fn generate_session_id(&self) -> String {
-        let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
-        let suffix = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        format!("s-{}-{}", timestamp, suffix)
+        format!(
+            "s-{}-{}",
+            Utc::now().format("%Y%m%d-%H%M%S"),
+            &Uuid::new_v4().to_string()[..8]
+        )
     }
 
-    /// 保存会话
     pub fn save(
         &self,
-        agent_config: &serde_json::Value,
-        history: &[serde_json::Value],
+        agent_config: &HashMap<String, serde_json::Value>,
+        history: &[crate::hello_agent::core::message::Message],
         tool_schema_hash: &str,
-        read_cache: &serde_json::Value,
-        metadata: &serde_json::Value,
+        read_cache: &HashMap<String, HashMap<String, serde_json::Value>>,
+        metadata: &HashMap<String, serde_json::Value>,
         session_name: Option<&str>,
-    ) -> Result<String> {
-        let session_id = self.generate_session_id();
-
-        let filename = if let Some(name) = session_name {
-            format!("{}.json", name)
-        } else {
-            format!("session-{}.json", session_id)
-        };
+    ) -> io::Result<String> {
+        let sid = self.generate_session_id();
+        let filename = session_name
+            .map(|n| format!("{}.json", n))
+            .unwrap_or_else(|| format!("session-{}.json", sid));
         let filepath = self.session_dir.join(&filename);
-
-        let session_data = serde_json::json!({
-            "session_id": session_id,
-            "created_at": metadata.get("created_at").unwrap_or(&serde_json::json!(Utc::now().to_rfc3339())),
-            "saved_at": Utc::now().to_rfc3339(),
-            "agent_config": agent_config,
-            "history": history,
-            "tool_schema_hash": tool_schema_hash,
-            "read_cache": read_cache,
-            "metadata": metadata,
-        });
-
-        // 原子写入
-        let temp_path = filepath.with_extension("tmp");
-        fs::write(&temp_path, serde_json::to_string_pretty(&session_data)?)?;
-        fs::rename(&temp_path, &filepath)?;
-
+        let mut data = serde_json::Map::new();
+        data.insert("session_id".into(), serde_json::json!(&sid));
+        data.insert(
+            "created_at".into(),
+            serde_json::json!(
+                metadata
+                    .get("created_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+            ),
+        );
+        data.insert(
+            "saved_at".into(),
+            serde_json::json!(Utc::now().to_rfc3339()),
+        );
+        data.insert(
+            "agent_config".into(),
+            serde_json::to_value(agent_config).unwrap_or_default(),
+        );
+        data.insert(
+            "history".into(),
+            serde_json::json!(
+                history
+                    .iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or_default())
+                    .collect::<Vec<_>>()
+            ),
+        );
+        data.insert(
+            "tool_schema_hash".into(),
+            serde_json::json!(tool_schema_hash),
+        );
+        data.insert(
+            "read_cache".into(),
+            serde_json::to_value(read_cache).unwrap_or_default(),
+        );
+        data.insert(
+            "metadata".into(),
+            serde_json::to_value(metadata).unwrap_or_default(),
+        );
+        let json = serde_json::to_string_pretty(&serde_json::Value::Object(data))?;
+        let temp = filepath.with_extension("tmp");
+        fs::write(&temp, &json)?;
+        fs::rename(&temp, &filepath)?;
         Ok(filepath.to_string_lossy().to_string())
     }
 
-    /// 加载会话
-    pub fn load(&self, filepath: &str) -> Result<serde_json::Value> {
-        let content = fs::read_to_string(filepath)?;
-        let data: serde_json::Value = serde_json::from_str(&content)?;
-        Ok(data)
+    pub fn load(&self, filepath: &Path) -> io::Result<serde_json::Value> {
+        serde_json::from_str(&fs::read_to_string(filepath)?)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// 列出所有会话
-    pub fn list_sessions(&self) -> Result<Vec<serde_json::Value>> {
+    pub fn list_sessions(&self) -> io::Result<Vec<HashMap<String, serde_json::Value>>> {
         let mut sessions = Vec::new();
-
+        if !self.session_dir.exists() {
+            return Ok(sessions);
+        }
         for entry in fs::read_dir(&self.session_dir)? {
             let entry = entry?;
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
-                if let Ok(content) = fs::read_to_string(&path) {
+            if entry.path().extension().map_or(false, |e| e == "json") {
+                if let Ok(content) = fs::read_to_string(entry.path()) {
                     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
-                        sessions.push(serde_json::json!({
-                            "filename": path.file_name().unwrap().to_string_lossy(),
-                            "filepath": path.to_string_lossy(),
-                            "session_id": data.get("session_id"),
-                            "created_at": data.get("created_at"),
-                            "saved_at": data.get("saved_at"),
-                            "metadata": data.get("metadata"),
-                        }));
+                        let mut info = HashMap::with_capacity(5);
+                        info.insert(
+                            "filename".into(),
+                            serde_json::json!(entry.file_name().to_string_lossy()),
+                        );
+                        info.insert(
+                            "filepath".into(),
+                            serde_json::json!(entry.path().to_string_lossy()),
+                        );
+                        info.insert(
+                            "session_id".into(),
+                            data.get("session_id").cloned().unwrap_or_default(),
+                        );
+                        info.insert(
+                            "saved_at".into(),
+                            data.get("saved_at").cloned().unwrap_or_default(),
+                        );
+                        info.insert(
+                            "metadata".into(),
+                            data.get("metadata").cloned().unwrap_or_default(),
+                        );
+                        sessions.push(info);
                     }
                 }
             }
         }
-
         sessions.sort_by(|a, b| {
             b.get("saved_at")
                 .and_then(|v| v.as_str())
                 .cmp(&a.get("saved_at").and_then(|v| v.as_str()))
         });
-
         Ok(sessions)
     }
 
-    /// 删除会话
-    pub fn delete(&self, session_name: &str) -> bool {
-        let filepath = self.session_dir.join(format!("{}.json", session_name));
-        if filepath.exists() {
-            fs::remove_file(filepath).is_ok()
+    pub fn delete(&self, name: &str) -> io::Result<bool> {
+        let fp = self.session_dir.join(format!("{}.json", name));
+        if fp.exists() {
+            fs::remove_file(fp)?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
-    /// 检查配置一致性
     pub fn check_config_consistency(
-        &self,
-        saved_config: &serde_json::Value,
-        current_config: &serde_json::Value,
-    ) -> serde_json::Value {
-        let mut warnings = Vec::new();
-
-        let checks = [
-            ("llm_provider", "LLM 提供商"),
-            ("llm_model", "模型"),
-            ("max_steps", "最大步数"),
-        ];
-
-        for (key, label) in checks {
-            let saved = saved_config.get(key).and_then(|v| v.as_str());
-            let current = current_config.get(key).and_then(|v| v.as_str());
-            if saved != current {
-                warnings.push(format!(
-                    "{}变化: {:?} → {:?}",
-                    label,
-                    saved.unwrap_or("unknown"),
-                    current.unwrap_or("unknown")
-                ));
-            }
+        saved: &HashMap<String, serde_json::Value>,
+        current: &HashMap<String, serde_json::Value>,
+    ) -> HashMap<String, serde_json::Value> {
+        let mut warnings: Vec<String> = Vec::new();
+        if saved.get("llm_provider") != current.get("llm_provider") {
+            warnings.push("LLM提供商变化".into());
         }
-
-        serde_json::json!({
-            "consistent": warnings.is_empty(),
-            "warnings": warnings,
-        })
+        if saved.get("llm_model") != current.get("llm_model") {
+            warnings.push("模型变化".into());
+        }
+        let mut r = HashMap::with_capacity(2);
+        r.insert("consistent".into(), serde_json::json!(warnings.is_empty()));
+        r.insert("warnings".into(), serde_json::json!(warnings));
+        r
     }
 
-    /// 检查工具 Schema 一致性
-    pub fn check_tool_schema_consistency(&self, saved_hash: &str, current_hash: &str) -> serde_json::Value {
-        let changed = saved_hash != current_hash;
-        serde_json::json!({
-            "changed": changed,
-            "saved_hash": saved_hash,
-            "current_hash": current_hash,
-            "recommendation": if changed { "建议重新读取文件" } else { "可以安全恢复" },
-        })
+    pub fn compute_tool_hash(signature: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(signature.as_bytes());
+        //format!("{:x}", &h.finalize()[..16])
+        format!("{:x}", &h.finalize())
     }
 }

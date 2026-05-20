@@ -1,36 +1,83 @@
+use crate::hello_agent::tools::base::{Tool, ToolParameter};
+use crate::hello_agent::tools::error::ToolErrorCode;
+use crate::hello_agent::tools::response::ToolResponse;
 use std::collections::HashMap;
 
-use crate::hello_agent::tools::base::{Tool, ToolParameter};
-use crate::hello_agent::tools::response::ToolResponse;
-
-/// 计算器工具
 pub struct CalculatorTool;
 
 impl CalculatorTool {
     pub fn new() -> Self {
-        Self
+        CalculatorTool
     }
 
-    fn eval(&self, expression: &str) -> Result<f64, String> {
-        // 简化版：使用 meval 或手动解析
-        // 这里提供一个基础实现，实际可使用 meval crate
-        let expr = expression.trim();
-
-        // 处理基本运算
-        if let Ok(result) = self.simple_eval(expr) {
-            return Ok(result);
-        }
-
-        Err(format!("无法计算表达式: {}", expression))
+    fn eval_expression(expr: &str) -> Result<f64, String> {
+        let expr = expr
+            .trim()
+            .replace("pi", &std::f64::consts::PI.to_string())
+            .replace("e", &std::f64::consts::E.to_string());
+        let tokens = Self::tokenize(&expr)?;
+        PrattParser::new(tokens).parse(0)
     }
 
-    fn simple_eval(&self, expr: &str) -> Result<f64, String> {
-        // 处理加减乘除和括号
-        let tokens: Vec<&str> = expr.split_whitespace().collect();
-        if tokens.len() == 1 {
-            return tokens[0].parse::<f64>().map_err(|e| format!("{}", e));
+    fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
+        let mut tokens = Vec::new();
+        let chars: Vec<char> = expr.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                c if c.is_whitespace() => {
+                    i += 1;
+                }
+                c if c.is_ascii_digit() || c == '.' => {
+                    let start = i;
+                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                        i += 1;
+                    }
+                    tokens.push(Token::Num(
+                        expr[start..i].parse().map_err(|_| "无效数字".to_string())?,
+                    ));
+                }
+                '+' => {
+                    tokens.push(Token::Add);
+                    i += 1;
+                }
+                '-' => {
+                    tokens.push(Token::Sub);
+                    i += 1;
+                }
+                '*' => {
+                    if i + 1 < chars.len() && chars[i + 1] == '*' {
+                        tokens.push(Token::Pow);
+                        i += 2;
+                    } else {
+                        tokens.push(Token::Mul);
+                        i += 1;
+                    }
+                }
+                '/' => {
+                    tokens.push(Token::Div);
+                    i += 1;
+                }
+                '(' => {
+                    tokens.push(Token::LParen);
+                    i += 1;
+                }
+                ')' => {
+                    tokens.push(Token::RParen);
+                    i += 1;
+                }
+                c if c.is_alphabetic() => {
+                    let start = i;
+                    while i < chars.len() && chars[i].is_alphabetic() {
+                        i += 1;
+                    }
+                    tokens.push(Token::Func(chars[start..i].iter().collect()));
+                }
+                _ => return Err(format!("无效字符: {}", chars[i])),
+            }
         }
-        Err("复杂表达式暂不支持，请使用简单数值".into())
+        tokens.push(Token::EOF);
+        Ok(tokens)
     }
 }
 
@@ -38,40 +85,162 @@ impl Tool for CalculatorTool {
     fn name(&self) -> &str {
         "python_calculator"
     }
-
     fn description(&self) -> &str {
-        "执行数学计算。支持基本运算、数学函数等。"
+        "执行数学计算，支持基本运算和数学函数"
     }
-
-    fn get_parameters(&self) -> Vec<ToolParameter> {
-        vec![ToolParameter::new("input", "string", "要计算的数学表达式", true)]
-    }
-
-    fn run(&self, parameters: &HashMap<String, serde_json::Value>) -> ToolResponse {
-        let expression = parameters
+    fn run(&self, parameters: HashMap<String, serde_json::Value>) -> ToolResponse {
+        let expr = parameters
             .get("input")
-            .or_else(|| parameters.get("expression"))
+            .or(parameters.get("expression"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-
-        if expression.is_empty() {
-            return ToolResponse::error("INVALID_PARAM", "计算表达式不能为空");
+        if expr.is_empty() {
+            return ToolResponse::error(ToolErrorCode::InvalidParam.as_str(), "表达式不能为空");
         }
-
-        println!("🧮 正在计算: {}", expression);
-
-        match self.eval(expression) {
+        match Self::eval_expression(expr) {
             Ok(result) => {
-                let result_str = format!("{}", result);
-                println!("✅ 计算结果: {}", result_str);
-                ToolResponse::success(format!("计算结果: {}", result_str))
-                    .with_data("expression", expression)
-                    .with_data("result", result_str)
+                let mut data = HashMap::new();
+                data.insert("result".into(), serde_json::json!(result));
+                data.insert("expression".into(), serde_json::json!(expr));
+                ToolResponse::success(format!("计算结果: {}", result), data)
             }
-            Err(e) => {
-                println!("❌ 计算失败: {}", e);
-                ToolResponse::error("EXECUTION_ERROR", e)
+            Err(e) => ToolResponse::error(ToolErrorCode::ExecutionError.as_str(), &e),
+        }
+    }
+    fn get_parameters(&self) -> Vec<ToolParameter> {
+        vec![ToolParameter::new("input", "string", "数学表达式")]
+    }
+}
+
+pub fn calculate(expr: &str) -> String {
+    let mut p = HashMap::new();
+    p.insert("input".into(), serde_json::json!(expr));
+    CalculatorTool.run(p).text
+}
+
+#[derive(Debug, Clone)]
+enum Token {
+    Num(f64),
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    LParen,
+    RParen,
+    Func(String),
+    Comma,
+    EOF,
+}
+
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Token::Num(a), Token::Num(b)) => a.to_bits() == b.to_bits(),
+            (Token::Func(a), Token::Func(b)) => a == b,
+            (Token::Add, Token::Add)
+            | (Token::Sub, Token::Sub)
+            | (Token::Mul, Token::Mul)
+            | (Token::Div, Token::Div)
+            | (Token::Pow, Token::Pow)
+            | (Token::LParen, Token::LParen)
+            | (Token::RParen, Token::RParen)
+            | (Token::Comma, Token::Comma)
+            | (Token::EOF, Token::EOF) => true,
+            _ => false,
+        }
+    }
+}
+
+struct PrattParser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl PrattParser {
+    fn new(tokens: Vec<Token>) -> Self {
+        PrattParser { tokens, pos: 0 }
+    }
+    fn cur(&self) -> &Token {
+        &self.tokens[self.pos]
+    }
+    fn adv(&mut self) -> &Token {
+        self.pos += 1;
+        &self.tokens[self.pos - 1]
+    }
+
+    fn parse(&mut self, min_prec: u8) -> Result<f64, String> {
+        let mut left = self.prefix()?;
+        while self.precedence() >= min_prec {
+            let op = self.cur().clone();
+            self.adv();
+            left = self.infix(left, &op)?;
+        }
+        Ok(left)
+    }
+
+    fn precedence(&self) -> u8 {
+        match self.cur() {
+            Token::Add | Token::Sub => 1,
+            Token::Mul | Token::Div => 2,
+            Token::Pow => 3,
+            _ => 0,
+        }
+    }
+
+    fn prefix(&mut self) -> Result<f64, String> {
+        match self.cur().clone() {
+            Token::Num(n) => {
+                self.adv();
+                Ok(n)
             }
+            Token::Sub => {
+                self.adv();
+                Ok(-self.parse(4)?)
+            }
+            Token::LParen => {
+                self.adv();
+                let v = self.parse(0)?;
+                self.adv();
+                Ok(v)
+            }
+            Token::Func(name) => {
+                self.adv();
+                self.adv();
+                let arg = self.parse(0)?;
+                self.adv();
+                match name.as_str() {
+                    "sqrt" => Ok(arg.sqrt()),
+                    "sin" => Ok(arg.sin()),
+                    "cos" => Ok(arg.cos()),
+                    "tan" => Ok(arg.tan()),
+                    "log" => Ok(arg.ln()),
+                    "exp" => Ok(arg.exp()),
+                    "abs" => Ok(arg.abs()),
+                    _ => Err(format!("未知函数:{}", name)),
+                }
+            }
+            _ => Err(format!("意外的token: {:?}", self.cur())),
+        }
+    }
+
+    fn infix(&mut self, left: f64, op: &Token) -> Result<f64, String> {
+        let prec = self.precedence();
+        self.adv();
+        let right = self.parse(prec + 1)?;
+        match op {
+            Token::Add => Ok(left + right),
+            Token::Sub => Ok(left - right),
+            Token::Mul => Ok(left * right),
+            Token::Div => {
+                if right == 0.0 {
+                    Err("除零".into())
+                } else {
+                    Ok(left / right)
+                }
+            }
+            Token::Pow => Ok(left.powf(right)),
+            _ => Err("无效操作符".into()),
         }
     }
 }
