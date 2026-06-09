@@ -1,0 +1,23 @@
+[package]
+name = "simple_hello_agents_v2"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+simple_hello_agents_base = {workspace = true}
+async-trait = {workspace = true}
+reqwest = {workspace = true}
+serde = { workspace = true, features = ["derive"] }
+futures = {workspace = true}
+dotenvy = {workspace = true}
+serde_json = {workspace = true}
+tokio = {workspace = true}
+chrono = {workspace = true}
+
+[lints]
+workspace = true

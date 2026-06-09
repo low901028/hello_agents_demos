@@ -1,0 +1,6 @@
+/target
+/.env
+/.idea
+/memory
+/memory/*
+/Cargo.lock

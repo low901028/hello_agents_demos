@@ -1,0 +1,27 @@
+[package]
+name = "hello_agents"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+chrono = {workspace = true, default-features = false, features = ["std", "now"]}
+serde_json = {workspace = true}
+thiserror = {workspace = true}
+serde_yaml = {workspace = true}
+reqwest = {workspace = true}
+serde = { workspace = true, features = ["derive"] }
+sha2 = {workspace = true}
+uuid = {workspace = true, features = ["v4"] }
+hex = {workspace = true}
+tokio = {workspace = true}
+futures = {workspace = true}
+tokio-util = {workspace = true}
+tokio-test = {workspace = true}
+
+[lints]
+workspace = true

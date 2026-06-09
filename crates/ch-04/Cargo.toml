@@ -1,0 +1,21 @@
+[package]
+name = "simple_hello_agents_base"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+reqwest = { workspace = true, features = ["json", "stream", "query"] }
+serde = { workspace = true }
+serde_json = {workspace = true}
+dotenvy = { workspace = true }
+regex = {workspace = true}
+futures = {workspace = true}
+anyhow = {workspace = true}
+
+[lints]
+workspace = true
