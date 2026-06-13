@@ -47,6 +47,7 @@ include_dir = { version = "0.7", default-features = false }
 indoc = { version = "2", default-features = false }
 keyring = { version = "3.6.3", default-features = false, features = ["vendored"] }
 lru = { version = "0.16", default-features = false }
+lazy_static = {version = "1.5", default-features = false, features = ["spin"]}
 once_cell = { version = "1.21.3", default-features = false, features = ["std"] }
 rand = { version = "0.8.5", default-features = false, features = ["std"] }
 regex = { version = "1.12.3", default-features = false, features = ["std", "unicode"] }
@@ -62,7 +63,7 @@ tempfile = { version = "3.10.1", default-features = false }
 thiserror = { version = "1.0.49", default-features = false }
 tokio = { version = "1.48", default-features = false ,features = ["macros", "rt"]}
 tokio-stream = { version = "0.1.16", default-features = false }
-tokio-util = { version = "0.7.12", default-features = false }
+tokio-util = { version = "0.7.12", default-features = false, features = ["codec"]}
 tokio-test = { version = "0.4.5"}
 tower-http = { version = "0.6.8", default-features = false }
 tracing = { version = "0.1.43", default-features = false, features = ["std"] }
@@ -89,6 +90,10 @@ opentelemetry-http = { version = "0.32", default-features = false, features = ["
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "internal-logs", "logs", "metrics", "reqwest-client", "trace"] }
 opentelemetry-appender-tracing = { version = "0.32", default-features = false, features = ["experimental_span_attributes"] }
 opentelemetry-stdout = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs"] }
+
+meval = {version = "0.2.0",features = ["serde"]}
+evalexpr = {version = "13.*", features = ["serde", "regex"]}
+
 tracing-opentelemetry = { version = "0.33", default-features = false, features = ["metrics"] }
 
 rayon = { version = "1.10", default-features = false }

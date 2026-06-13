@@ -90,7 +90,7 @@ impl SessionStore {
     pub fn save(
         &self,
         agent_config: &HashMap<String, serde_json::Value>,
-        history: &[crate::core::message::Message],
+        history: &[crate::core::llm_resp_req::Message],
         tool_schema_hash: &str,
         read_cache: &HashMap<String, HashMap<String, serde_json::Value>>,
         metadata: &HashMap<String, serde_json::Value>,

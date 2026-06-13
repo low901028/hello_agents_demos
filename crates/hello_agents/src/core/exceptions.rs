@@ -21,6 +21,8 @@ pub enum HelloAgentException {
     SerializationException(String),
     #[error("{0}")]
     General(String),
+    #[error("Stream End")]
+    StreamEnd
 }
 
 /// ===============================

@@ -368,10 +368,11 @@ impl Config {
         config
     }
 
-    pub(crate) fn to_dict(&self) -> HashMap<String, serde_json::Value> {
+    ///  转换为字典格式，方便日志记录
+    pub fn to_dict(&self) -> Option<HashMap<String, serde_json::Value>> {
         match serde_json::to_value(self) {
-            Ok(serde_json::Value::Object(map)) => map.into_iter().collect(),
-            _ => HashMap::new(),
+            Ok(serde_json::Value::Object(map)) => Some(map.into_iter().collect()),
+            _ => None,
         }
     }
 

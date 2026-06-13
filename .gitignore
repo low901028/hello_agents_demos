@@ -4,3 +4,7 @@
 /memory
 /memory/*
 /Cargo.lock
+/skills
+/skills/*
+/tool-output
+/tool-output/*
