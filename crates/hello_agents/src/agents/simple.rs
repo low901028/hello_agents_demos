@@ -154,12 +154,20 @@ impl Agent for SimpleAgent {
             .append(Message::new_text(&final_resp, MessageRole::Assistant));
         Ok(final_resp)
     }
-
+    
     fn build_tool_schemas(&self) -> Vec<HashMap<String, Value>> {
-        if let Some(reg) = self.base.tool_registry() {
+        if let Some(reg_arc) = self.base.tool_registry_arc() {
+            let reg = reg_arc.lock().unwrap();
             reg.get_all_tools()
                 .iter()
-                .map(|t| t.to_dict().into_iter().map(|(k, v)| (k, v)).collect())
+                .map(|tool| {
+                    let schema_val = tool.to_openai_schema();
+                    if let Value::Object(map) = schema_val {
+                        map.into_iter().collect()
+                    } else {
+                        HashMap::new()
+                    }
+                })
                 .collect()
         } else {
             Vec::new()

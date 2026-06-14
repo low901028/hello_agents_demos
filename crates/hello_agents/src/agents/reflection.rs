@@ -86,6 +86,16 @@ impl ReflectionAgent {
         }
     }
 
+    pub fn add_tool(
+        &mut self,
+        tool: Box<dyn crate::core::traits::tool::Tool>,
+        auto_expand: bool,
+    ) {
+        if let Some(reg) = self.base.tool_registry_arc() {
+            reg.lock().unwrap().register_tool(tool, auto_expand);
+        }
+    }
+
     fn get_llm_response(
         &self,
         messages: Vec<Message>,
@@ -280,11 +290,18 @@ impl Agent for ReflectionAgent {
     }
 
     fn build_tool_schemas(&self) -> Vec<HashMap<String, Value>> {
-        if let Some(registry) = self.base.tool_registry() {
-            registry
-                .get_all_tools()
+        if let Some(reg_arc) = self.base.tool_registry_arc() {
+            let reg = reg_arc.lock().unwrap();
+            reg.get_all_tools()
                 .iter()
-                .map(|t| t.to_dict().into_iter().map(|(k, v)| (k, v)).collect())
+                .map(|tool| {
+                    let schema_val = tool.to_openai_schema();
+                    if let Value::Object(map) = schema_val {
+                        map.into_iter().collect()
+                    } else {
+                        HashMap::new()
+                    }
+                })
                 .collect()
         } else {
             Vec::new()
@@ -292,27 +309,9 @@ impl Agent for ReflectionAgent {
     }
 
     fn execute_tool_call(&self, tool_name: &str, arguments: Value) -> String {
-        if let Some(registry) = self.base.tool_registry() {
-            let input = arguments
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let resp = registry.execute_tool(tool_name, input);
-            match resp.status {
-                ToolStatus::Error => {
-                    let code = resp
-                        .error_info
-                        .as_ref()
-                        .map(|e| e.code.as_str())
-                        .unwrap_or("UNKNOWN");
-                    format!("❌ 错误 [{}]: {}", code, resp.text)
-                }
-                ToolStatus::Partial => format!("⚠️ 部分成功: {}", resp.text),
-                _ => resp.text,
-            }
-        } else {
-            "❌ 错误：未配置工具注册表".to_string()
-        }
+        self.base
+            .execute_tool_call(tool_name, &arguments)
+            .unwrap_or_else(|e| format!("❌ {}", e))
     }
 
     fn run_as_subagent(
