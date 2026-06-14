@@ -156,7 +156,7 @@ mod tests {
         // 检查字段
         assert_eq!(dict["status"], "success");
         assert_eq!(dict["text"], "hello");
-        assert_eq!(dict["data"], json!({"key": "value"}));
+        assert_eq!(dict["test_data"], json!({"key": "value"}));
         assert!(!dict.as_object().unwrap().contains_key("error"));
 
         let restored = ToolResponse::from_dict(&dict).unwrap();
@@ -201,7 +201,7 @@ mod tests {
         let dict = json!({
             "status": "success",
             "text": "minimal",
-            "data": {}
+            "test_data": {}
         });
         let resp = ToolResponse::from_dict(&dict).unwrap();
         assert!(resp.error_info.is_none());

@@ -72,6 +72,35 @@ impl AgentContext for AgentBase {
     fn tool_registry_arc(&self) -> Option<Arc<Mutex<ToolRegistry>>> {
         self.tool_registry.clone()
     }
+
+    fn execute_tool_call(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<String, HelloAgentException> {
+        if let Some(reg) = self.tool_registry_arc() {
+            let registry = reg.lock().unwrap();
+            // Serialize the whole arguments object into a JSON string.
+            // The tool registry will parse it back into Value (via parse_parameters)
+            // and then pass it to the tool's run method.
+            let input_str = serde_json::to_string(arguments).unwrap_or_default();
+            let resp = registry.execute_tool(tool_name, &input_str);
+            match resp.status {
+                ToolStatus::Error => Ok(format!(
+                    "❌ [{}]: {}",
+                    resp.error_info
+                        .as_ref()
+                        .map(|e| e.code.as_str())
+                        .unwrap_or("UNKNOWN"),
+                    resp.text
+                )),
+                ToolStatus::Partial => Ok(format!("⚠️ 部分: {}", resp.text)),
+                _ => Ok(resp.text),
+            }
+        } else {
+            Err(HelloAgentException::config("未配置工具注册表"))
+        }
+    }
 }
 
 pub struct ToolCallRunner<C: AgentContext> {
@@ -138,33 +167,7 @@ impl<C: AgentContext> ToolCallRunner<C> {
         tool_name: &str,
         arguments: &Value,
     ) -> Result<String, HelloAgentException> {
-        // 从 context 中获取 tool_registry 字段（需要 AgentBase 提供 pub 访问）
-        // 由于 AgentContext trait 没有返回 Arc，我们直接访问 context 的字段（需要了解具体类型）
-        // 这里我们假设 C 是 AgentBase（或者我们使用 trait 的扩展方法）
-        // 为了通用性，我们可以在 AgentContext 中添加一个 fn tool_registry_arc(&self) -> Option<Arc<Mutex<ToolRegistry>>> 方法。
-        // 暂时，我们通过动态分派不安全的做法不可取，所以需要调整 trait。
-        // 鉴于时间，我们直接硬编码为 AgentBase 的访问方式，但这样 ToolCallRunner 就不是泛型的了。
-        // 更好的做法：在 AgentContext trait 中增加 tool_registry_arc 方法。
-        // 我们这里给出最终版本：已在 AgentContext 中增加该方法，并在此调用。
-        if let Some(registry_arc) = self.context.tool_registry_arc() {
-            let registry = registry_arc.lock().unwrap();
-            let input = arguments.get("input").and_then(|v| v.as_str()).unwrap_or("");
-            let resp = registry.execute_tool(tool_name, input);
-            match resp.status {
-                ToolStatus::Error => Ok(format!(
-                    "❌ [{}]: {}",
-                    resp.error_info
-                        .as_ref()
-                        .map(|e| e.code.as_str())
-                        .unwrap_or("UNKNOWN"),
-                    resp.text
-                )),
-                ToolStatus::Partial => Ok(format!("⚠️ 部分: {}", resp.text)),
-                _ => Ok(resp.text),
-            }
-        } else {
-            Err(HelloAgentException::config("未配置工具注册表"))
-        }
+        self.context.execute_tool_call(tool_name, arguments)
     }
 }
 

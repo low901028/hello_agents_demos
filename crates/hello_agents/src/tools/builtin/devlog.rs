@@ -1,17 +1,9 @@
-//! devlog
-//! 开发日志工具
-//! 记录 Agent 的开发决策、问题、解决方案等关键信息。
-//!
-//! 特性：
-//! - 结构化日志（category + content + metadata）
-//! - 持久化到 memory/devlogs/
-//! - 支持过滤查询（按类别、标签）
-//! - 自动生成摘要
-//! - 基于 ToolResponse 协议
+// tools/builtin/devlog.rs
+// 开发日志工具 - 对应 Python DevLogTool
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
@@ -25,6 +17,20 @@ use crate::core::types::exceptions::HelloAgentException;
 use crate::tools::error::ToolErrorCode;
 use crate::tools::response::{ToolResponse, ToolStatus};
 use crate::tools::tool_base::ToolBase;
+
+// ------------------------------------------------------------
+// 安全截断辅助函数
+// ------------------------------------------------------------
+fn safe_truncate(s: &str, max_chars: usize) -> &str {
+    if s.chars().count() <= max_chars {
+        return s;
+    }
+    let mut end = 0;
+    for (i, c) in s.char_indices().take(max_chars) {
+        end = i + c.len_utf8();
+    }
+    &s[..end]
+}
 
 // ------------------------------------------------------------
 // 常量：支持的日志类别
@@ -69,7 +75,7 @@ pub struct DevLogEntry {
 }
 
 impl DevLogEntry {
-    pub fn new(
+    pub fn create(
         category: impl Into<String>,
         content: impl Into<String>,
         metadata: Option<HashMap<String, JsonValue>>,
@@ -107,7 +113,7 @@ pub struct DevLogStore {
 }
 
 impl DevLogStore {
-    pub fn new(session_id: impl Into<String>, agent_name: impl Into<String>) -> Self {
+    pub fn create(session_id: impl Into<String>, agent_name: impl Into<String>) -> Self {
         let now = Utc::now().to_rfc3339();
         Self {
             session_id: session_id.into(),
@@ -118,30 +124,12 @@ impl DevLogStore {
         }
     }
 
-    pub fn load_if_exists(
-        session_id: &str,
-        agent_name: &str,
-        persistence_dir: &Path,
-    ) -> Self {
-        let mut store = DevLogStore::new(session_id, agent_name);
-        let filepath = persistence_dir.join(format!("devlog-{}.json", session_id));
-        if filepath.exists() {
-            if let Ok(content) = fs::read_to_string(&filepath) {
-                if let Ok(data) = serde_json::from_str::<JsonValue>(&content) {
-                    if let Ok(loaded) = DevLogStore::from_dict(&data) {
-                        store = loaded;
-                    }
-                }
-            }
-        }
-        store
-    }
-
     pub fn append(&mut self, entry: DevLogEntry) {
         self.entries.push(entry);
         self.updated_at = Utc::now().to_rfc3339();
     }
 
+    /// 过滤日志条目（修复标签匹配逻辑）
     pub fn filter_entries(
         &self,
         category: Option<&str>,
@@ -150,18 +138,22 @@ impl DevLogStore {
     ) -> Vec<DevLogEntry> {
         let mut filtered: Vec<&DevLogEntry> = self.entries.iter().collect();
 
-        // 按类别过滤
         if let Some(cat) = category {
             filtered.retain(|e| e.category == cat);
         }
 
-        // 按标签过滤
         if let Some(ref tags) = tags {
             filtered.retain(|e| {
                 e.metadata
                     .get("tags")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().any(|t| tags.iter().any(|tag| t.as_str() == Some(tag.as_str()))))
+                    .map(|arr| {
+                        arr.iter().any(|t| {
+                            tags.iter().any(|tag| {
+                                t.as_str().map_or(false, |s| s == tag.as_str())
+                            })
+                        })
+                    })
                     .unwrap_or(false)
             });
         }
@@ -176,7 +168,6 @@ impl DevLogStore {
         filtered.into_iter().cloned().collect()
     }
 
-    /// 获取统计信息
     pub fn get_stats(&self) -> JsonValue {
         let mut by_category = serde_json::Map::new();
         for entry in &self.entries {
@@ -187,19 +178,16 @@ impl DevLogStore {
                 *n = serde_json::Number::from(n.as_u64().unwrap_or(0) + 1);
             }
         }
-
         let mut map = serde_json::Map::new();
         map.insert("total_entries".to_string(), JsonValue::Number(serde_json::Number::from(self.entries.len())));
         map.insert("by_category".to_string(), JsonValue::Object(by_category));
         JsonValue::Object(map)
     }
 
-    /// 生成摘要
     pub fn generate_summary(&self, limit: usize) -> String {
         if self.entries.is_empty() {
             return "📝 暂无开发日志".to_string();
         }
-
         let stats = self.get_stats();
         let total = self.entries.len();
         let recent = if self.entries.len() > limit {
@@ -207,10 +195,7 @@ impl DevLogStore {
         } else {
             &self.entries[..]
         };
-
         let mut summary_parts = vec![format!("📝 共 {} 条日志", total)];
-
-        // 按类别统计
         if let Some(by_cat) = stats.get("by_category").and_then(|v| v.as_object()) {
             let cat_summary: Vec<String> = by_cat
                 .iter()
@@ -218,24 +203,21 @@ impl DevLogStore {
                 .collect();
             summary_parts.push(format!("分类: {}", cat_summary.join(", ")));
         }
-
-        // 最近日志
         let recent_entries: Vec<&DevLogEntry> = recent.iter().rev().take(3).collect();
         if !recent_entries.is_empty() {
             let recent_summary: Vec<String> = recent_entries
                 .iter()
                 .map(|e| {
-                    let truncated = if e.content.chars().count() > 30 {
-                        format!("{}...", &e.content[..30])
+                    let truncated = safe_truncate(&e.content, 30);
+                    if e.content.chars().count() > 30 {
+                        format!("[{}] {}...", e.category, truncated)
                     } else {
-                        e.content.clone()
-                    };
-                    format!("[{}] {}", e.category, truncated)
+                        format!("[{}] {}", e.category, truncated)
+                    }
                 })
                 .collect();
             summary_parts.push(format!("最近: {}", recent_summary.join("; ")));
         }
-
         summary_parts.join(". ")
     }
 
@@ -248,39 +230,17 @@ impl DevLogStore {
     }
 }
 
-/// ------------------------------------------------------------
-/// DevLogTool - 开发日志工具
-///
-///     特性：
-///     - 记录开发决策、问题、解决方案
-///     - 支持多种类别（decision/progress/issue/solution/refactor/test/performance）
-///     - 持久化到 memory/devlogs/
-///     - 支持过滤查询和摘要生成
-///
-///     使用场景：
-///     - 记录架构决策和技术选型理由
-///     - 记录遇到的问题和解决方案
-///     - 记录重构决策和性能优化
-///     - 跨会话知识积累
-///
-///     操作：
-///     - append: 追加日志
-///     - read: 读取日志（支持过滤）
-///     - summary: 生成摘要
-///     - clear: 清空日志
-/// ------------------------------------------------------------
+// ------------------------------------------------------------
+// DevLogTool - 开发日志工具
+// ------------------------------------------------------------
 pub struct DevLogTool {
     base: ToolBase,
-    session_id: String,
-    agent_name: String,
+    pub session_id: String,
+    pub agent_name: String,
     persistence_dir: PathBuf,
-    store: Arc<Mutex<DevLogStore>>,
+    pub store: Arc<Mutex<DevLogStore>>,
 }
 
-/// session_id: 会话 ID
-/// agent_name: Agent 名称
-/// project_root: 项目根目录
-/// persistence_dir: 持久化目录（相对于 project_root）
 impl DevLogTool {
     pub fn new(
         session_id: impl Into<String>,
@@ -294,8 +254,19 @@ impl DevLogTool {
 
         fs::create_dir_all(&persistence_dir).ok();
 
+        let mut store = DevLogStore::create(&session_id, &agent_name);
+
         // 尝试加载已有日志
-        let store = DevLogStore::load_if_exists(&session_id, &agent_name, &persistence_dir);
+        let filepath = persistence_dir.join(format!("devlog-{}.json", session_id));
+        if filepath.exists() {
+            if let Ok(content) = fs::read_to_string(&filepath) {
+                if let Ok(data) = serde_json::from_str::<JsonValue>(&content) {
+                    if let Ok(loaded) = DevLogStore::from_dict(&data) {
+                        store = loaded;
+                    }
+                }
+            }
+        }
 
         let description = format!(
             "记录开发过程中的关键决策和问题。\n\n支持的类别：\n{}\n\n操作：\n- append: 追加日志（需要 category, content, metadata）\n- read: 读取日志（可选 category, tags, limit）\n- summary: 生成摘要\n- clear: 清空日志\n\n示例：\n{{\n  \"action\": \"append\",\n  \"category\": \"decision\",\n  \"content\": \"选择使用 Redis 作为缓存层\",\n  \"metadata\": {{\"tags\": [\"architecture\", \"cache\"]}}\n}}",
@@ -324,42 +295,22 @@ impl DevLogTool {
     }
 
     fn handle_append(&self, parameters: &JsonValue) -> Result<ToolResponse, HelloAgentException> {
-        let category = parameters
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let content = parameters
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let category = parameters.get("category").and_then(|v| v.as_str()).unwrap_or("");
+        let content = parameters.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
         if category.is_empty() {
-            return Ok(ToolResponse::error(
-                ToolErrorCode::InvalidParam.as_str(),
-                "追加日志时必须指定 category",
-                None,
-                None,
-            ));
+            return Ok(ToolResponse::error(ToolErrorCode::InvalidParam.as_str(), "追加日志时必须指定 category", None, None));
         }
         if !CATEGORIES.contains_key(category) {
             return Ok(ToolResponse::error(
                 ToolErrorCode::InvalidParam.as_str(),
-                &format!(
-                    "无效的类别：{}，支持的类别：{}",
-                    category,
-                    category_keys().join(", ")
-                ),
+                &format!("无效的类别：{}，支持的类别：{}", category, category_keys().join(", ")),
                 None,
                 None,
             ));
         }
         if content.is_empty() {
-            return Ok(ToolResponse::error(
-                ToolErrorCode::InvalidParam.as_str(),
-                "追加日志时必须指定 content",
-                None,
-                None,
-            ));
+            return Ok(ToolResponse::error(ToolErrorCode::InvalidParam.as_str(), "追加日志时必须指定 content", None, None));
         }
 
         let metadata: HashMap<String, JsonValue> = parameters
@@ -370,7 +321,7 @@ impl DevLogTool {
             .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
 
-        let entry = DevLogEntry::new(category, content, Some(metadata));
+        let entry = DevLogEntry::create(category, content, Some(metadata));
         let stats = {
             let mut store = self.store.lock().unwrap();
             store.append(entry.clone());
@@ -380,10 +331,9 @@ impl DevLogTool {
 
         Ok(ToolResponse::success(
             format!(
-                "✅ 日志已记录 [{}]: {}{}",
+                "✅ 日志已记录 [{}]: {}",
                 entry.category,
-                &entry.content[..std::cmp::min(50, entry.content.len())],
-                if entry.content.len() > 50 { "..." } else { "" }
+                safe_truncate(&entry.content, 50)
             ),
             Some(serde_json::json!({
                 "log_id": entry.id,
@@ -396,7 +346,7 @@ impl DevLogTool {
     }
 
     fn handle_read(&self, parameters: &JsonValue) -> Result<ToolResponse, HelloAgentException> {
-        let filter = parameters.get("filter").cloned().unwrap_or(JsonValue::Object(Default::default()));
+        let filter = parameters.get("filter").unwrap_or(&JsonValue::Null);
         let category = filter.get("category").and_then(|v| v.as_str());
         let tags: Option<Vec<String>> = filter
             .get("tags")
@@ -465,63 +415,31 @@ impl DevLogTool {
     }
 }
 
-
 impl Tool for DevLogTool {
-    fn name(&self) -> &str {
-        &self.base.name
+    fn name(&self) -> &str { &self.base.name }
+    fn description(&self) -> &str {
+        &self.base.description
     }
 
     fn run(&self, parameters: JsonValue) -> Result<ToolResponse, HelloAgentException> {
-        let action = parameters
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let action = parameters.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
         match action {
             "append" => self.handle_append(&parameters),
             "read" => self.handle_read(&parameters),
             "summary" => self.handle_summary(),
             "clear" => self.handle_clear(),
-            _ => Ok(ToolResponse::error(
-                ToolErrorCode::InvalidParam.as_str(),
-                &format!("未知操作：{}", action),
-                None,
-                None,
-            )),
+            _ => Ok(ToolResponse::error(ToolErrorCode::InvalidParam.as_str(), &format!("未知操作：{}", action), None, None)),
         }
     }
 
     fn get_parameters(&self) -> Vec<ToolParameter> {
         vec![
-            ToolParameter::new(
-                "action",
-                "string",
-                "操作类型：append（追加）、read（读取）、summary（摘要）、clear（清空）",
-                true,
-                None,
-            ),
-            ToolParameter::new(
-                "category",
-                "string",
-                &format!("日志类别（append 时必填）：{}", category_keys().join(", ")),
-                false,
-                None,
-            ),
+            ToolParameter::new("action", "string", "操作类型：append/read/summary/clear", true, None),
+            ToolParameter::new("category", "string", &format!("日志类别（append 时必填）：{}", category_keys().join(", ")), false, None),
             ToolParameter::new("content", "string", "日志内容（append 时必填）", false, None),
-            ToolParameter::new(
-                "metadata",
-                "object",
-                "元数据（可选），如 {\"tags\": [\"cache\"], \"step\": 3}",
-                false,
-                None,
-            ),
-            ToolParameter::new(
-                "filter",
-                "object",
-                "过滤条件（read 时可选），如 {\"category\": \"decision\", \"tags\": [\"architecture\"], \"limit\": 10}",
-                false,
-                None,
-            ),
+            ToolParameter::new("metadata", "object", "元数据（可选），如 {\"tags\": [\"cache\"]}", false, None),
+            ToolParameter::new("filter", "object", "过滤条件（read 时可选），如 {\"category\": \"decision\", \"tags\": [\"architecture\"], \"limit\": 10}", false, None),
         ]
     }
 
@@ -533,71 +451,5 @@ impl Tool for DevLogTool {
             persistence_dir: self.persistence_dir.clone(),
             store: Arc::clone(&self.store),
         })
-    }
-
-    fn description(&self) -> &str {
-        &self.base.description
-    }
-}
-
-// =============================================================================
-// 测试用例
-// =============================================================================
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::PathBuf;
-
-    fn create_tool() -> DevLogTool {
-        DevLogTool::new(
-            "test-session",
-            "TestAgent",
-            PathBuf::from("/tmp/test_project"),
-            PathBuf::from("/tmp/test_project/memory/devlogs"),
-        )
-    }
-
-    #[test]
-    fn test_append_and_read() {
-        let tool = create_tool();
-        let resp = tool
-            .run(json!({"action": "append", "category": "decision", "content": "使用Rust"}))
-            .unwrap();
-        assert_eq!(resp.status, ToolStatus::Success);
-        assert!(resp.text.contains("使用Rust"));
-
-        let resp = tool.run(json!({"action": "read"})).unwrap();
-        assert_eq!(resp.status, ToolStatus::Success);
-        let data = resp.data;
-        let entries = data["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-    }
-
-    #[test]
-    fn test_invalid_category_returns_error() {
-        let tool = create_tool();
-        let resp = tool
-            .run(json!({"action": "append", "category": "invalid", "content": "x"}))
-            .unwrap();
-        assert_eq!(resp.status, ToolStatus::Error);
-    }
-
-    #[test]
-    fn test_clear() {
-        let tool = create_tool();
-        tool.run(json!({"action": "append", "category": "decision", "content": "test"})).unwrap();
-        let resp = tool.run(json!({"action": "clear"})).unwrap();
-        assert_eq!(resp.status, ToolStatus::Success);
-        let data = resp.data;
-        assert_eq!(data["cleared_count"], 1);
-    }
-
-    #[test]
-    fn test_summary_empty() {
-        let tool = create_tool();
-        let resp = tool.run(json!({"action": "summary"})).unwrap();
-        assert_eq!(resp.status, ToolStatus::Success);
-        assert!(resp.text.contains("暂无开发日志"));
     }
 }

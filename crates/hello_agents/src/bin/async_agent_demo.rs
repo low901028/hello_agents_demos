@@ -170,7 +170,7 @@ async fn main() -> Result<(), HelloAgentException> {
     };
 
     // 4. 创建 ReActAgent（注意构造参数需要 Arc<dyn LLMAdapter>，而不是 HelloAgentsLLM）
-    let mut agent = ReActAgent::new(
+    let agent = ReActAgent::new(
         "AsyncAgent",
         adapter,
         Some(registry),

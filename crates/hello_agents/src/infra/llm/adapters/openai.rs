@@ -241,10 +241,10 @@ impl LLMAdapter for OpenAIAdapter {
 
         for line in text.lines() {
             let line = line.trim();
-            if !line.starts_with("data: ") {
+            if !line.starts_with("test_data: ") {
                 continue;
             }
-            let data = &line["data: ".len()..];
+            let data = &line["test_data: ".len()..];
             if data == "[DONE]" {
                 continue;
             }
@@ -354,8 +354,8 @@ impl LLMAdapter for OpenAIAdapter {
                 let text = String::from_utf8_lossy(&bytes);
                 for line in text.lines() {
                     let line = line.trim();
-                    if !line.starts_with("data: ") { continue; }
-                    let data = &line["data: ".len()..];
+                    if !line.starts_with("test_data: ") { continue; }
+                    let data = &line["test_data: ".len()..];
                     if data == "[DONE]" { break; }
                     let json: Value = serde_json::from_str(data)
                         .map_err(|e| HelloAgentException::llm(format!("SSE 解析错误: {}", e)))?;
@@ -408,7 +408,7 @@ impl LLMAdapter for OpenAIAdapter {
             Some("auto".to_string()),
         );
 
-        println!("==== {:?}", serde_json::to_string_pretty(&body));
+        //println!("==== {:?}", serde_json::to_string_pretty(&body));
 
         let url = format!("{}/chat/completions", self.base_url);
         let resp = client

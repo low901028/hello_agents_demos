@@ -32,6 +32,8 @@ once_cell = {workspace = true}
 meval = {workspace = true}
 evalexpr = {workspace = true}
 lazy_static = {workspace = true}
+md5 = {workspace = true}
+tempfile = {workspace = true}
 
 
 [lints]

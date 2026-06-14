@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agents::base::AgentBase;
+use crate::agents::base::{AgentBase, ToolCallRunner};
 use crate::core::traits::agent::{Agent, SubagentMetadata, SubagentResult};
 use crate::core::traits::context::AgentContext;
 use crate::core::types::config::Config;
@@ -12,7 +12,6 @@ use crate::core::types::exceptions::HelloAgentException;
 use crate::core::types::message::{Message, MessageContent, MessageRole};
 use crate::tools::filter::ToolFilter;
 use crate::tools::registry::ToolRegistry;
-use crate::tools::response::ToolStatus;
 
 const DEFAULT_REACT_SYSTEM_PROMPT: &str = "你是一个具备推理和行动能力的 AI 助手。
 
@@ -42,6 +41,7 @@ pub struct ReActAgent {
     builtin_tools: HashSet<String>,
     current_step: usize,
     total_tokens: usize,
+    runner: ToolCallRunner<AgentBase>,   // 用于执行业务工具
 }
 
 impl ReActAgent {
@@ -59,16 +59,18 @@ impl ReActAgent {
         builtin.insert("Thought".to_string());
         builtin.insert("Finish".to_string());
 
+        // 确保 tool_registry 至少存在一个空注册表，方便 add_tool 使用
         let tool_registry = Some(tool_registry.unwrap_or(Arc::new(Mutex::new(ToolRegistry::new(None)))));
+        let base = AgentBase::new(name, llm, Some(system_prompt), config, tool_registry);
+        let runner = ToolCallRunner::new(Arc::new(base.clone()), max_steps);
+
         Self {
-            base: AgentBase::new(name, llm, Some(system_prompt),
-                                 config,
-                                 tool_registry
-                                 ),
+            base,
             max_steps,
             builtin_tools: builtin,
             current_step: 0,
             total_tokens: 0,
+            runner,
         }
     }
 
@@ -77,7 +79,7 @@ impl ReActAgent {
         tool: Box<dyn crate::core::traits::tool::Tool>,
         auto_expand: bool,
     ) {
-        if let Some(ref mut reg) = self.base.tool_registry {
+        if let Some(reg) = self.base.tool_registry_arc() {
             reg.lock().unwrap().register_tool(tool, auto_expand);
         }
     }
@@ -144,14 +146,7 @@ impl Agent for ReActAgent {
             let response = match self.base.llm.invoke_with_tools(
                 messages.clone(),
                 tool_schemas.clone(),
-                {
-                    let mut m = HashMap::new();
-                    m.insert(
-                        "tool_choice".to_string(),
-                        Value::String("auto".to_string()),
-                    );
-                    m
-                },
+                HashMap::new(),
             ) {
                 Ok(resp) => resp,
                 Err(e) => {
@@ -180,6 +175,8 @@ impl Agent for ReActAgent {
 
             messages.push(crate::agents::base::build_assistant_tool_message(&response));
 
+            // 先处理内置工具（Thought/Finish），再处理业务工具
+            let mut business_tool_calls = Vec::new();
             for tc in &tool_calls {
                 let tool_name = tc
                     .function
@@ -236,8 +233,17 @@ impl Agent for ReActAgent {
                         ..Default::default()
                     });
                 } else {
+                    business_tool_calls.push((tool_call_id, tool_name, arguments));
+                }
+            }
+
+            // 执行业务工具，使用 ToolCallRunner
+            if !business_tool_calls.is_empty() {
+                // 将业务工具调用的结果逐一处理
+                for (tool_call_id, tool_name, arguments) in business_tool_calls {
                     println!("🎬 调用工具: {}({})", tool_name, arguments);
-                    let result = self.execute_tool_call(&tool_name, arguments.clone());
+                    let result = self.base.execute_tool_call(&tool_name, &arguments)
+                        .unwrap_or_else(|e| format!("❌ {}", e));
                     if result.starts_with("❌") {
                         println!("{}", result);
                     } else {
@@ -250,6 +256,7 @@ impl Agent for ReActAgent {
                         ..Default::default()
                     });
                 }
+                // 继续循环，让模型基于工具结果继续推理
             }
         }
 
@@ -266,10 +273,10 @@ impl Agent for ReActAgent {
     fn build_tool_schemas(&self) -> Vec<HashMap<String, Value>> {
         let mut schemas = Vec::new();
 
-        // Thought
+        // 内置 Thought 工具
         schemas.push({
             let mut map = HashMap::new();
-            map.insert("type".to_string(), Value::String("function".to_string()));
+            map.insert("type".into(), "function".into());
             let func = serde_json::json!({
                 "name": "Thought",
                 "description": "分析问题，制定策略，记录推理过程。",
@@ -281,14 +288,14 @@ impl Agent for ReActAgent {
                     "required": ["reasoning"]
                 }
             });
-            map.insert("function".to_string(), func);
+            map.insert("function".into(), func);
             map
         });
 
-        // Finish
+        // 内置 Finish 工具
         schemas.push({
             let mut map = HashMap::new();
-            map.insert("type".to_string(), Value::String("function".to_string()));
+            map.insert("type".into(), "function".into());
             let func = serde_json::json!({
                 "name": "Finish",
                 "description": "返回最终答案",
@@ -300,16 +307,22 @@ impl Agent for ReActAgent {
                     "required": ["answer"]
                 }
             });
-            map.insert("function".to_string(), func);
+            map.insert("function".into(), func);
             map
         });
 
-        // 用户工具
-        if let Some(registry) = self.base.tool_registry() {
-            for tool in registry.get_all_tools() {
-                let schema: HashMap<String, Value> =
-                    tool.to_dict().into_iter().map(|(k, v)| (k, v)).collect();
-                schemas.push(schema);
+        // 用户注册的工具（使用 to_openai_schema 生成标准结构）
+        if let Some(reg_arc) = self.base.tool_registry_arc() {
+            let reg = reg_arc.lock().unwrap();
+            for tool in reg.get_all_tools() {
+                let name = tool.name().to_string();
+                if self.builtin_tools.contains(&name) {
+                    continue;
+                }
+                let schema_val = tool.to_openai_schema();
+                if let Value::Object(map) = schema_val {
+                    schemas.push(map.into_iter().collect());
+                }
             }
         }
 
@@ -317,27 +330,9 @@ impl Agent for ReActAgent {
     }
 
     fn execute_tool_call(&self, tool_name: &str, arguments: Value) -> String {
-        if let Some(registry) = self.base.tool_registry() {
-            let input = arguments
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let resp = registry.execute_tool(tool_name, input);
-            match resp.status {
-                ToolStatus::Error => {
-                    let code = resp
-                        .error_info
-                        .as_ref()
-                        .map(|e| e.code.as_str())
-                        .unwrap_or("UNKNOWN");
-                    format!("❌ 错误 [{}]: {}", code, resp.text)
-                }
-                ToolStatus::Partial => format!("⚠️ 部分成功: {}", resp.text),
-                _ => resp.text,
-            }
-        } else {
-            "❌ 错误：未配置工具注册表".to_string()
-        }
+        // 委托给 AgentContext 实现，保证注册表访问统一
+        self.base.execute_tool_call(tool_name, &arguments)
+            .unwrap_or_else(|e| format!("❌ {}", e))
     }
 
     fn run_as_subagent(

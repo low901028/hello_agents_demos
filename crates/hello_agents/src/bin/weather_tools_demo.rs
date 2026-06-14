@@ -148,7 +148,6 @@ impl Tool for SearchTool {
 
     fn run(&self, parameters: Value) -> Result<ToolResponse, HelloAgentException> {
         let query = parameters.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let _= create_search_tool();
         Ok(ToolResponse::success(
             format!("搜索结果：关于 '{}' 的信息...", query),
             Some(json!({"query": query, "results": 10})),
@@ -384,12 +383,12 @@ async fn main() -> Result<()> {
 
     let mut registry = ToolRegistry::new(None);
     registry.register_tool(Box::new(SearchTool::new()), false);
-    // registry.register_tool(Box::new(CalculatorTool::new()), false);
-    // registry.register_tool(Box::new(WeatherTool::new()), false);
+    registry.register_tool(Box::new(CalculatorTool::new()), false);
+    registry.register_tool(Box::new(WeatherTool::new()), false);
     let registry = Arc::new(Mutex::new(registry));
 
     let config = Config {
-        max_concurrent_tools: 3,
+        max_concurrent_tools: 1,
         hook_timeout_seconds: 5.0,
         trace_enabled: true,
         ..Default::default()
