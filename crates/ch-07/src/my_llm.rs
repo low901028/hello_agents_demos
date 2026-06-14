@@ -208,7 +208,7 @@ impl MyLLM {
                 if line.is_empty() {
                     continue;
                 }
-                if let Some(data) = line.strip_prefix("data: ") {
+                if let Some(data) = line.strip_prefix("test_data: ") {
                     if data == "[DONE]" {
                         break;
                     }

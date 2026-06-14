@@ -97,7 +97,7 @@ impl DeepSeekClient {
             let chunk = chunk?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            // 解析 SSE 行 (格式: "data: {json}\n\n")
+            // 解析 SSE 行 (格式: "test_data: {json}\n\n")
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].to_string();
                 buffer = buffer[pos + 1..].to_string();
@@ -105,7 +105,7 @@ impl DeepSeekClient {
                 if line.is_empty() {
                     continue;
                 }
-                if let Some(data) = line.strip_prefix("data: ") {
+                if let Some(data) = line.strip_prefix("test_data: ") {
                     if data == "[DONE]" {
                         break;
                     }
