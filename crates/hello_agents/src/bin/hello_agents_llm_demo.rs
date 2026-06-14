@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use hello_agents::core::exceptions::HelloAgentException;
-use hello_agents::core::hello_agents_llm;
-use hello_agents::core::hello_agents_llm::HelloAgentsLLM;
-use hello_agents::core::llm_resp_req::{Message, MessageContent, MessageRole};
+
 use std::collections::HashMap;
+use hello_agents::core::types::Message;
+use hello_agents::core::types::message::{MessageContent, MessageRole};
+use hello_agents::infra::llm::hello_agents_llm::HelloAgentsLLM;
 
 #[tokio::main]
 async fn main() -> Result<()> {

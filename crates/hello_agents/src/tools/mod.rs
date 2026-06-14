@@ -1,7 +1,8 @@
-pub mod tool_filter;
-pub mod tool_response;
+// src/tools/mod.rs
 pub mod circuit_breaker;
-pub mod tool_registry;
+pub mod error;
+pub mod filter;
+pub mod registry;
+pub mod response;
 pub mod tool_base;
-pub mod tool_error;
-pub mod builtin; // 内置工具
+pub mod builtin;

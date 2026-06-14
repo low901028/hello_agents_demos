@@ -1,5 +1,6 @@
 // ============================================================
-// src/core/mod.rs
+// src/infra/mod.rs
 // ============================================================
-pub mod traits;
-pub mod types;
+pub mod llm;
+pub mod session;
+pub mod trace;

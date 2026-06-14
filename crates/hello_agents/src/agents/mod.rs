@@ -1,4 +1,6 @@
-pub mod simple_agent;
-pub mod reflection_agent;
-pub mod react_agent;
-pub mod plan_solve_agent;
+// src/agents/mod.rs
+pub mod base;
+pub mod simple;
+pub mod react;
+pub mod reflection;
+pub mod plan_solve;

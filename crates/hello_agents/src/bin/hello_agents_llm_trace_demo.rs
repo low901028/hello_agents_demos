@@ -1,4 +1,4 @@
-use hello_agents::observability::trace_logger::TraceLogger;
+use hello_agents::infra::trace::trace_logger::TraceLogger;
 
 fn main() {
     let mut trace_logger = TraceLogger::new("memory/traces", false, Some(true));
