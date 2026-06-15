@@ -9,31 +9,33 @@ repository.workspace = true
 description.workspace = true
 
 [dependencies]
-chrono = {workspace = true, default-features = false, features = ["std", "now"]}
-serde_json = {workspace = true}
-thiserror = {workspace = true}
-serde_yaml = {workspace = true}
-reqwest = {workspace = true, features = ["blocking", "zstd"]}
+chrono = { workspace = true, default-features = false, features = ["std", "now"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+serde_yaml = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "zstd"] }
 serde = { workspace = true, features = ["derive"] }
-sha2 = {workspace = true}
-uuid = {workspace = true, features = ["v4"] }
-hex = {workspace = true}
-tokio = {workspace = true, features = ["rt-multi-thread"]}
-futures = {workspace = true}
-tokio-util = {workspace = true, features = ["codec"] }
-tokio-test = {workspace = true}
-async-trait = {workspace = true}
-tokio-stream = {workspace = true}
-async-stream = {workspace = true}
-anyhow = {workspace = true}
-dotenvy = {workspace = true}
-regex = {workspace = true}
-once_cell = {workspace = true}
-meval = {workspace = true}
-evalexpr = {workspace = true}
-lazy_static = {workspace = true}
-md5 = {workspace = true}
-tempfile = {workspace = true}
+sha2 = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+hex = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+futures = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+tokio-test = { workspace = true }
+async-trait = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+meval = { workspace = true }
+evalexpr = { workspace = true }
+lazy_static = { workspace = true }
+md5 = { workspace = true }
+tempfile = { workspace = true }
+axum = {workspace = true}
+tower-http = {workspace = true}
 
 
 [lints]

@@ -1,5 +1,5 @@
-//! src/context/builder.rs
-//! GSSC 上下文构建器 (Gather-Select-Structure-Compress)
+// src/context/builder.rs
+// GSSC 上下文构建器 (Gather-Select-Structure-Compress)
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::context::token_counter::count_tokens;
-use crate::core::types::message::{Message, MessageContent, MessageRole};
+use crate::core::types::message::Message;
 
 /// 上下文信息包
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +71,9 @@ pub struct ContextBuilder {
 
 impl ContextBuilder {
     pub fn new(config: Option<ContextConfig>) -> Self {
-        Self { config: config.unwrap_or_default() }
+        Self {
+            config: config.unwrap_or_default(),
+        }
     }
 
     pub fn build(
@@ -81,13 +83,14 @@ impl ContextBuilder {
         system_instructions: Option<&str>,
         additional_packets: Option<Vec<ContextPacket>>,
     ) -> String {
-        // 1. Gather
-        let packets = self.gather(user_query, conversation_history.unwrap_or(&[]), system_instructions, additional_packets.unwrap_or_default());
-        // 2. Select
+        let packets = self.gather(
+            user_query,
+            conversation_history.unwrap_or(&[]),
+            system_instructions,
+            additional_packets.unwrap_or_default(),
+        );
         let selected = self.select(packets, user_query);
-        // 3. Structure
         let structured = self.structure(&selected, user_query, system_instructions);
-        // 4. Compress
         self.compress(&structured)
     }
 
@@ -113,7 +116,10 @@ impl ContextBuilder {
             };
             let history_text: Vec<String> = recent
                 .iter()
-                .map(|msg| format!("[{}] {}", msg.role.as_str(), extract_text(msg)))
+                .map(|msg| {
+                    let content = msg.content.clone().unwrap_or_default();
+                    format!("[{}] {}", msg.role, content)
+                })
                 .collect();
             let mut meta = HashMap::new();
             meta.insert("type".to_string(), "history".to_string());
@@ -125,7 +131,7 @@ impl ContextBuilder {
     }
 
     fn select(&self, packets: Vec<ContextPacket>, user_query: &str) -> Vec<ContextPacket> {
-        let user_query_lower =  user_query.to_lowercase();
+        let user_query_lower = user_query.to_lowercase();
         let query_tokens: HashSet<&str> = user_query_lower.split_whitespace().collect();
 
         let mut scored: Vec<(f64, ContextPacket)> = packets
@@ -140,7 +146,10 @@ impl ContextBuilder {
                     p.relevance_score = 0.0;
                 }
                 let now = SystemTime::now();
-                let delta = now.duration_since(p.timestamp).unwrap_or(Duration::ZERO).as_secs_f64();
+                let delta = now
+                    .duration_since(p.timestamp)
+                    .unwrap_or(Duration::ZERO)
+                    .as_secs_f64();
                 let tau = 3600.0;
                 let rec = (-delta / tau).exp();
                 let score = 0.7 * p.relevance_score + 0.3 * rec;
@@ -179,29 +188,56 @@ impl ContextBuilder {
         selected
     }
 
-    fn structure(&self, selected: &[ContextPacket], user_query: &str, _system_instructions: Option<&str>) -> String {
+    fn structure(
+        &self,
+        selected: &[ContextPacket],
+        user_query: &str,
+        _system_instructions: Option<&str>,
+    ) -> String {
         let mut sections = Vec::new();
 
-        let p0: Vec<&ContextPacket> = selected.iter().filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("instructions")).collect();
+        let p0: Vec<&ContextPacket> = selected
+            .iter()
+            .filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("instructions"))
+            .collect();
         if !p0.is_empty() {
             let mut role = "[Role & Policies]\n".to_string();
-            role.push_str(&p0.iter().map(|p| p.content.as_str()).collect::<Vec<_>>().join("\n"));
+            role.push_str(
+                &p0.iter()
+                    .map(|p| p.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
             sections.push(role);
         }
 
         sections.push(format!("[Task]\n用户问题：{}", user_query));
 
-        let p1: Vec<&ContextPacket> = selected.iter().filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("task_state")).collect();
+        let p1: Vec<&ContextPacket> = selected
+            .iter()
+            .filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("task_state"))
+            .collect();
         if !p1.is_empty() {
             let mut state = "[State]\n关键进展与未决问题：\n".to_string();
-            state.push_str(&p1.iter().map(|p| p.content.as_str()).collect::<Vec<_>>().join("\n"));
+            state.push_str(
+                &p1.iter()
+                    .map(|p| p.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
             sections.push(state);
         }
 
-        let p2: Vec<&ContextPacket> = selected.iter().filter(|p| {
-            let t = p.metadata.get("type").map(|s| s.as_str());
-            t == Some("related_memory") || t == Some("knowledge_base") || t == Some("retrieval") || t == Some("tool_result")
-        }).collect();
+        let p2: Vec<&ContextPacket> = selected
+            .iter()
+            .filter(|p| {
+                let t = p.metadata.get("type").map(|s| s.as_str());
+                t == Some("related_memory")
+                    || t == Some("knowledge_base")
+                    || t == Some("retrieval")
+                    || t == Some("tool_result")
+            })
+            .collect();
         if !p2.is_empty() {
             let mut evidence = "[Evidence]\n事实与引用：\n".to_string();
             for p in &p2 {
@@ -210,10 +246,18 @@ impl ContextBuilder {
             sections.push(evidence);
         }
 
-        let p3: Vec<&ContextPacket> = selected.iter().filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("history")).collect();
+        let p3: Vec<&ContextPacket> = selected
+            .iter()
+            .filter(|p| p.metadata.get("type").map(|s| s.as_str()) == Some("history"))
+            .collect();
         if !p3.is_empty() {
             let mut context = "[Context]\n对话历史与背景：\n".to_string();
-            context.push_str(&p3.iter().map(|p| p.content.as_str()).collect::<Vec<_>>().join("\n"));
+            context.push_str(
+                &p3.iter()
+                    .map(|p| p.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
             sections.push(context);
         }
 
@@ -232,7 +276,10 @@ impl ContextBuilder {
         if current_tokens <= available {
             return context.to_string();
         }
-        println!("⚠️ 上下文超预算 ({} > {})，执行截断", current_tokens, available);
+        println!(
+            "⚠️ 上下文超预算 ({} > {})，执行截断",
+            current_tokens, available
+        );
         let lines: Vec<&str> = context.lines().collect();
         let mut compressed = Vec::new();
         let mut used = 0;
@@ -245,12 +292,5 @@ impl ContextBuilder {
             used += lt;
         }
         compressed.join("\n")
-    }
-}
-
-fn extract_text(msg: &Message) -> String {
-    match &msg.content {
-        Some(MessageContent::Text(t)) => t.clone(),
-        _ => String::new(),
     }
 }

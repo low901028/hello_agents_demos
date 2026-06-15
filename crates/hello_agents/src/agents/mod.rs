@@ -1,6 +1,4 @@
-// src/agents/mod.rs
-pub mod base;
-pub mod simple;
+pub mod plan_solve;
 pub mod react;
 pub mod reflection;
-pub mod plan_solve;
+pub mod simple;

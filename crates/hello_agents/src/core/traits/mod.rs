@@ -1,6 +1,9 @@
-// src/core/traits/mod.rs
-pub mod adapter;
 pub mod agent;
-pub mod context;
+pub mod expandable;
+pub mod history;
 pub mod lifecycle;
+pub mod llm_provider;
+pub mod session_store;
 pub mod tool;
+pub mod tool_filter;
+pub mod tool_registry;

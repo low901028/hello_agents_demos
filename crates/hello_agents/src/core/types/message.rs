@@ -1,111 +1,95 @@
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-    Tool,
-    Summary,
-}
-
-impl MessageRole {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-            MessageRole::System => "system",
-            MessageRole::Tool => "tool",
-            MessageRole::Summary => "summary",
-        }
-    }
-
-    pub fn from_str(role: &str) -> Option<Self> {
-        match role {
-            "user" => Some(MessageRole::User),
-            "assistant" => Some(MessageRole::Assistant),
-            "system" => Some(MessageRole::System),
-            "tool" => Some(MessageRole::Tool),
-            "summary" => Some(MessageRole::Summary),
-            _ => None,
-        }
-    }
-}
-
-impl Display for MessageRole {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: MessageRole,
-    pub content: Option<MessageContent>,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<super::llm_resp_req::ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
 }
 
-impl Display for Message {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(self).unwrap())
+impl Message {
+    pub fn system(content: &str) -> Self {
+        Self {
+            role: "system".into(),
+            content: Some(content.into()),
+            ..Default::default()
+        }
+    }
+    pub fn user(content: &str) -> Self {
+        Self {
+            role: "user".into(),
+            content: Some(content.into()),
+            ..Default::default()
+        }
+    }
+    pub fn assistant(content: &str) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: Some(content.into()),
+            ..Default::default()
+        }
+    }
+    pub fn tool(tool_call_id: String, content: &str) -> Self {
+        Self {
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_call_id: Some(tool_call_id),
+            ..Default::default()
+        }
+    }
+    pub fn assistant_tool_calls(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content,
+            tool_calls: Some(tool_calls),
+            ..Default::default()
+        }
     }
 }
 
 impl Default for Message {
     fn default() -> Self {
         Self {
-            role: MessageRole::User,
+            role: "user".into(),
             content: None,
-            tool_call_id: None,
             tool_calls: None,
+            tool_call_id: None,
             name: None,
-            extra: HashMap::new(),
-        }
-    }
-}
-
-impl Message {
-    pub fn new_text(content: impl Into<String>, role: MessageRole) -> Self {
-        Self {
-            role,
-            content: Some(MessageContent::Text(content.into())),
-            ..Default::default()
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-    Array(Vec<ContentPart>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContentPart {
+pub struct ToolCall {
+    pub id: String,
     #[serde(rename = "type")]
-    pub part_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_url: Option<ImageUrl>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    pub call_type: String,
+    pub function: FunctionCall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageUrl {
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub def_type: &'static str,
+    pub function: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
 }

@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
+/// =================================
+/// agent操作事件
+/// =================================
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
     #[serde(rename = "agent_start")]
@@ -47,11 +49,7 @@ pub struct AgentEvent {
 }
 
 impl AgentEvent {
-    pub fn new(
-        event_type: EventType,
-        agent_name: String,
-        data: HashMap<String, Value>,
-    ) -> Self {
+    pub fn new(event_type: EventType, agent_name: String, data: HashMap<String, Value>) -> Self {
         Self {
             event_type,
             timestamp: Utc::now().timestamp_millis() as f64 / 1000.0,
@@ -64,15 +62,63 @@ impl AgentEvent {
 /// 流式事件（供 arun_stream 返回）
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    AgentStart { name: String, input_text: String },
-    AgentFinish { name: String, result: String, total_steps: usize },
-    AgentError { name: String, error: String, error_type: String },
-    StepStart { name: String, step: usize, max_steps: usize, description: Option<String> },
-    StepFinish { name: String, step: usize, result: Option<String> },
-    LlmChunk { name: String, chunk: String, step: usize },
-    ToolCallStart { name: String, tool_name: String, tool_call_id: String, args: Value, step: usize },
-    ToolCallFinish { name: String, tool_name: String, tool_call_id: String, result: String, step: usize },
-    Thinking { name: String, chunk: String, phase: String, iteration: usize },
-    Reflection { name: String, feedback: String, iteration: usize },
-    PlanGenerated { name: String, plan: Vec<String> },
+    AgentStart {
+        name: String,
+        input_text: String,
+    },
+    AgentFinish {
+        name: String,
+        result: String,
+        total_steps: usize,
+    },
+    AgentError {
+        name: String,
+        error: String,
+        error_type: String,
+    },
+    StepStart {
+        name: String,
+        step: usize,
+        max_steps: usize,
+        description: Option<String>,
+    },
+    StepFinish {
+        name: String,
+        step: usize,
+        result: Option<String>,
+    },
+    LlmChunk {
+        name: String,
+        chunk: String,
+        step: usize,
+    },
+    ToolCallStart {
+        name: String,
+        tool_name: String,
+        tool_call_id: String,
+        args: Value,
+        step: usize,
+    },
+    ToolCallFinish {
+        name: String,
+        tool_name: String,
+        tool_call_id: String,
+        result: String,
+        step: usize,
+    },
+    Thinking {
+        name: String,
+        chunk: String,
+        phase: String,
+        iteration: usize,
+    },
+    Reflection {
+        name: String,
+        feedback: String,
+        iteration: usize,
+    },
+    PlanGenerated {
+        name: String,
+        plan: Vec<String>,
+    },
 }

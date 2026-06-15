@@ -1,15 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
+/// =================================
+/// 配置类(模型)
+/// =================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub default_model: String,
-    pub default_provider: String,
     pub temperature: f64,
     pub max_tokens: Option<usize>,
-    pub debug: bool,
-    pub log_level: String,
-    pub max_history_length: usize,
     pub context_window: usize,
     pub compression_threshold: f64,
     pub min_retain_rounds: usize,
@@ -60,12 +57,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_model: "deepseek-v4-flash".into(),
-            default_provider: "deepseek".into(),
             temperature: 0.7,
             max_tokens: None,
-            debug: false,
-            log_level: "INFO".into(),
-            max_history_length: 100,
             context_window: 128000,
             compression_threshold: 0.8,
             min_retain_rounds: 10,
@@ -111,13 +104,5 @@ impl Default for Config {
             stream_include_thinking: true,
             stream_include_tool_calls: true,
         }
-    }
-}
-
-impl Config {
-    pub fn to_dict(&self) -> Option<HashMap<String, serde_json::Value>> {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_object().map(|o| o.clone().into_iter().collect()))
     }
 }

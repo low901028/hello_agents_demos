@@ -62,13 +62,28 @@ pub struct ObservationTruncator {
 }
 
 impl ObservationTruncator {
-    pub fn new(max_lines: usize, max_bytes: usize, direction: TruncateDirection, output_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        max_lines: usize,
+        max_bytes: usize,
+        direction: TruncateDirection,
+        output_dir: impl Into<PathBuf>,
+    ) -> Self {
         let output_dir = output_dir.into();
         fs::create_dir_all(&output_dir).ok();
-        Self { max_lines, max_bytes, truncate_direction: direction, output_dir }
+        Self {
+            max_lines,
+            max_bytes,
+            truncate_direction: direction,
+            output_dir,
+        }
     }
 
-    pub fn truncate(&self, tool_name: &str, output: &str, metadata: Option<HashMap<String, Value>>) -> TruncateResult {
+    pub fn truncate(
+        &self,
+        tool_name: &str,
+        output: &str,
+        metadata: Option<HashMap<String, Value>>,
+    ) -> TruncateResult {
         let start = Instant::now();
         let lines: Vec<&str> = output.lines().collect();
         let bytes_size = output.as_bytes().len();
@@ -113,12 +128,18 @@ impl ObservationTruncator {
         match self.truncate_direction {
             TruncateDirection::Head => lines[..self.max_lines.min(lines.len())].to_vec(),
             TruncateDirection::Tail => {
-                let start = if self.max_lines >= lines.len() { 0 } else { lines.len() - self.max_lines };
+                let start = if self.max_lines >= lines.len() {
+                    0
+                } else {
+                    lines.len() - self.max_lines
+                };
                 lines[start..].to_vec()
             }
             TruncateDirection::HeadTail => {
                 let half = self.max_lines / 2;
-                if lines.len() <= self.max_lines { return lines.to_vec(); }
+                if lines.len() <= self.max_lines {
+                    return lines.to_vec();
+                }
                 let mut res = Vec::new();
                 res.extend_from_slice(&lines[..half]);
                 res.push("...(中间省略)...");
@@ -128,7 +149,12 @@ impl ObservationTruncator {
         }
     }
 
-    fn save_full_output(&self, tool_name: &str, output: &str, metadata: Option<HashMap<String, Value>>) -> String {
+    fn save_full_output(
+        &self,
+        tool_name: &str,
+        output: &str,
+        metadata: Option<HashMap<String, Value>>,
+    ) -> String {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S_%f");
         let filename = format!("tool_{}_{}.json", timestamp, tool_name);
         let filepath = self.output_dir.join(&filename);
@@ -141,7 +167,11 @@ impl ObservationTruncator {
         });
 
         if let Ok(mut file) = fs::File::create(&filepath) {
-            let _ = file.write_all(serde_json::to_string_pretty(&data).unwrap_or_default().as_bytes());
+            let _ = file.write_all(
+                serde_json::to_string_pretty(&data)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
         }
 
         filepath.to_string_lossy().to_string()

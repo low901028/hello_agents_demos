@@ -1,13 +1,16 @@
 // examples/context_engineering_demo.rs
-// 上下文工程使用示例 (修复 UTF-8 边界错误)
+// 上下文工程使用示例（适配最新架构，异步 main）
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-
-use hello_agents::context::history::HistoryManager;
+use std::sync::Arc;
+use hello_agents::context::history_manager_impl::HistoryManagerImpl;
 use hello_agents::context::token_counter::TokenCounter;
 use hello_agents::context::truncator::{ObservationTruncator, TruncateDirection};
-use hello_agents::core::types::message::{Message, MessageContent, MessageRole};
+use hello_agents::core::traits::history::HistoryManager;
+use hello_agents::core::traits::llm_provider;
+use hello_agents::core::traits::llm_provider::LlmProvider;
+use hello_agents::core::types::message::Message;
+use hello_agents::infra::openai_adapter::OpenAIAdapter;
 
 /// 安全的字符切片，确保不会截断多字节字符
 fn safe_truncate(s: &str, max_chars: usize) -> &str {
@@ -22,9 +25,9 @@ fn demo_token_counter() {
     println!("示例 1: Token 计数器（缓存 + 增量计算）");
     println!("{}", "=".repeat(60));
 
-    let mut counter = TokenCounter::new("gpt-4");
+    let mut counter = TokenCounter::new("deepseek-v4-chat");
 
-    let msg1 = Message::new_text("Hello, world!", MessageRole::User);
+    let msg1 = Message::user("Hello, world!");
     let tokens1 = counter.count_message(&msg1);
     println!("\n消息 1 Token 数: {}", tokens1);
 
@@ -32,9 +35,9 @@ fn demo_token_counter() {
     println!("消息 1 Token 数（缓存）: {}", tokens1_cached);
 
     let messages = vec![
-        Message::new_text("First message", MessageRole::User),
-        Message::new_text("Second message", MessageRole::Assistant),
-        Message::new_text("Third message", MessageRole::User),
+        Message::user("First message"),
+        Message::assistant("Second message"),
+        Message::user("Third message"),
     ];
     let total_tokens = counter.count_messages(&messages);
     println!("\n消息列表总 Token 数: {}", total_tokens);
@@ -50,32 +53,20 @@ fn demo_simple_summary() {
     println!("示例 2: 简单摘要（默认，无需额外 API）");
     println!("{}", "=".repeat(60));
 
-    let mut manager = HistoryManager::new(3, 0.8);
+    let mut manager = HistoryManagerImpl::new(3, 0.8);
 
     println!("\n添加对话历史...");
     for i in 0..5 {
-        manager.append(Message::new_text(
-            &format!("用户问题 {}", i + 1),
-            MessageRole::User,
-        ));
-        manager.append(Message::new_text(
-            &format!("助手回答 {}", i + 1),
-            MessageRole::Assistant,
-        ));
+        manager.add_message(Message::user(&format!("用户问题 {}", i + 1)));
+        manager.add_message(Message::assistant(&format!("助手回答 {}", i + 1)));
     }
 
-    let history = manager.get_history();
+    let history = manager.messages();
     println!("总消息数: {}", history.len());
 
     let rounds = manager.estimate_rounds();
-    let user_msgs = history
-        .iter()
-        .filter(|m| m.role == MessageRole::User)
-        .count();
-    let assistant_msgs = history
-        .iter()
-        .filter(|m| m.role == MessageRole::Assistant)
-        .count();
+    let user_msgs = history.iter().filter(|m| m.role == "user").count();
+    let assistant_msgs = history.iter().filter(|m| m.role == "assistant").count();
     let summary = format!(
         "此会话包含 {} 轮对话：\n- 用户消息：{} 条\n- 助手消息：{} 条\n- 总消息数：{} 条\n\n（历史已压缩，保留最近 {} 轮完整对话）",
         rounds, user_msgs, assistant_msgs, history.len(), manager.min_retain_rounds
@@ -85,16 +76,68 @@ fn demo_simple_summary() {
     println!("\n✅ 简单摘要测试完成");
 }
 
-fn demo_smart_summary() {
+async fn demo_smart_summary() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n{}", "=".repeat(60));
-    println!("示例 3: 智能摘要（可选，需额外 API）");
+    println!("示例 3: 智能摘要（调用 LLM）");
     println!("{}", "=".repeat(60));
 
-    println!("\n智能摘要需要轻量 LLM 实例，本示例略过实际调用，仅展示流程。");
-    println!("在 Python 示例中，启用了 enable_smart_compression，并通过 Agent 生成。");
-    println!("Rust 版本可在 Agent 中配置并调用 _generate_smart_summary（需实现）。");
+    // 从环境变量获取 LLM 配置（与主 Demo 一致）
+    let model = std::env::var("LLM_MODEL_ID").unwrap_or_else(|_| "deepseek-chat".to_string());
+    let api_key = std::env::var("LLM_API_KEY")
+        .expect("请设置环境变量 LLM_API_KEY");
+    let base_url = std::env::var("LLM_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com/v1".to_string());
 
-    println!("\n✅ 智能摘要测试完成（框架展示）");
+    // 创建 LLM 适配器
+    let llm = Arc::new(OpenAIAdapter::new(&api_key, &base_url, &model));
+
+    // 创建简单的历史管理器（不需要完整的 AgentRuntime）
+    let mut history = HistoryManagerImpl::new(3, 0.8);
+
+    // 模拟多轮对话
+    println!("\n添加对话历史...");
+    let messages = vec![
+        Message::user("帮我分析这个项目的架构"),
+        Message::assistant("好的，我会分析项目架构"),
+        Message::user("发现了什么问题？"),
+        Message::assistant("发现了一些架构问题，需要重构"),
+        Message::user("继续分析"),
+        Message::assistant("正在深入分析中"),
+    ];
+    for msg in &messages {
+        history.add_message(msg.clone());
+    }
+
+    println!("总消息数: {}", history.messages().len());
+    println!("Token 计数: {}", history.estimate_tokens());
+
+    // 构建智能摘要 Prompt（与 Python 一致）
+    let history_text: String = messages
+        .iter()
+        .map(|msg| {
+            let content = msg.content.clone().unwrap_or_default();
+            format!("[{}]: {}", msg.role, content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let summary_prompt = format!("请将以下对话历史压缩为结构化摘要，保留关键信息：\n\n## 对话历史\n{history_text}\n\n## 摘要要求\n1. **任务目标**：用户想要完成什么？\n2. **关键决策**：做了哪些重要决定？\n3. **已完成工作**：完成了哪些任务？（列表形式）\n4. **待处理事项**：还有什么未完成？\n5. **重要发现**：有哪些关键信息或问题？\n\n请用简洁的中文输出，每部分不超过 3 行。");
+
+    println!("\n生成智能摘要（调用 LLM）...");
+
+    let chat_messages = vec![
+        Message::system("你是一个专业的对话摘要助手，擅长提取关键信息。"),
+        Message::user(&summary_prompt),
+    ];
+
+    // 调用 LLM
+    let resp = llm.chat(&chat_messages, None, None).await?;
+    let summary = resp.content.unwrap_or_default();
+
+    println!("\n智能摘要:\n{}", summary);
+    println!("\n✅ 智能摘要测试完成");
+
+    Ok(())
 }
 
 fn demo_history_management() {
@@ -102,35 +145,25 @@ fn demo_history_management() {
     println!("示例 4: 历史消息管理");
     println!("{}", "=".repeat(60));
 
-    let mut manager = HistoryManager::new(3, 0.8);
+    let mut manager = HistoryManagerImpl::new(3, 0.8);
 
     println!("\n添加对话历史...");
     for i in 0..5 {
-        manager.append(Message::new_text(
-            &format!("用户问题 {}", i + 1),
-            MessageRole::User,
-        ));
-        manager.append(Message::new_text(
-            &format!("助手回答 {}", i + 1),
-            MessageRole::Assistant,
-        ));
+        manager.add_message(Message::user(&format!("用户问题 {}", i + 1)));
+        manager.add_message(Message::assistant(&format!("助手回答 {}", i + 1)));
     }
 
-    println!("总消息数: {}", manager.get_history().len());
+    println!("总消息数: {}", manager.messages().len());
     println!("完整轮次数: {}", manager.estimate_rounds());
 
     println!("\n执行历史压缩...");
     manager.compress("前面讨论了一些基础问题");
 
-    let compressed = manager.get_history();
+    let compressed = manager.messages();
     println!("压缩后消息数: {}", compressed.len());
     println!("第一条消息角色: {:?}", compressed[0].role);
-    let content = match &compressed[0].content {
-        Some(MessageContent::Text(t)) => t.clone(),
-        _ => String::new(),
-    };
-    // 安全截断到 50 个字符
-    let preview = safe_truncate(&content, 52);
+    let content = compressed[0].content.clone().unwrap_or_default();
+    let preview = safe_truncate(&content, 50);
     println!("摘要内容: {}...", preview);
 
     println!("\n✅ 历史管理测试完成");
@@ -161,7 +194,6 @@ fn demo_observation_truncator() {
     println!("预览长度: {} 字节", result.preview.len());
     println!("保存路径: {:?}", result.full_output_path);
 
-    // 安全截断预览
     let preview = safe_truncate(&result.preview, 200);
     println!("\n预览内容:\n{}...", preview);
 
@@ -176,17 +208,14 @@ fn demo_session_serialization() {
     println!("示例 6: 会话序列化/反序列化");
     println!("{}", "=".repeat(60));
 
-    let mut manager = HistoryManager::new(5, 0.8);
+    let mut manager = HistoryManagerImpl::new(5, 0.8);
 
-    manager.append(Message::new_text("你好", MessageRole::User));
-    manager.append(Message::new_text(
-        "你好！有什么可以帮助你的？",
-        MessageRole::Assistant,
-    ));
-    manager.append(Message::new_text("介绍一下你自己", MessageRole::User));
-    manager.append(Message::new_text("我是 AI 助手", MessageRole::Assistant));
+    manager.add_message(Message::user("你好"));
+    manager.add_message(Message::assistant("你好！有什么可以帮助你的？"));
+    manager.add_message(Message::user("介绍一下你自己"));
+    manager.add_message(Message::assistant("我是 AI 助手"));
 
-    println!("\n原始历史: {} 条消息", manager.get_history().len());
+    println!("\n原始历史: {} 条消息", manager.messages().len());
 
     let serialized = manager.to_dict();
     println!(
@@ -198,26 +227,17 @@ fn demo_session_serialization() {
             .unwrap_or(0)
     );
 
-    let mut new_manager = HistoryManager::new(5, 0.8);
+    let mut new_manager = HistoryManagerImpl::new(5, 0.8);
     new_manager.load_from_dict(&serialized);
 
-    let restored_count = new_manager.get_history().len();
+    let restored_count = new_manager.messages().len();
     println!("恢复后历史: {} 条消息", restored_count);
 
     if restored_count > 0 {
-        let original = manager.get_history();
-        let restored = new_manager.get_history();
+        let original = manager.messages();
+        let restored = new_manager.messages();
         assert_eq!(original.len(), restored.len());
-        assert_eq!(
-            match &original[0].content {
-                Some(MessageContent::Text(t)) => t.as_str(),
-                _ => "",
-            },
-            match &restored[0].content {
-                Some(MessageContent::Text(t)) => t.as_str(),
-                _ => "",
-            }
-        );
+        assert_eq!(original[0].content, restored[0].content);
         println!("\n✅ 会话序列化测试完成");
     } else {
         eprintln!("❌ 反序列化失败，请检查 Message 的 Serialize/Deserialize 实现");
@@ -233,31 +253,34 @@ fn demo_round_boundaries() {
     println!("示例 7: 轮次边界检测");
     println!("{}", "=".repeat(60));
 
-    let mut manager = HistoryManager::new(5, 0.8);
+    let mut manager = HistoryManagerImpl::new(5, 0.8);
 
-    manager.append(Message::new_text("计算 2+3", MessageRole::User));
-    manager.append(Message::new_text("我需要使用计算器", MessageRole::Assistant));
-    manager.append(Message::new_text("5", MessageRole::Tool));
-    manager.append(Message::new_text("结果是 5", MessageRole::Assistant));
+    manager.add_message(Message::user("计算 2+3"));
+    manager.add_message(Message::assistant("我需要使用计算器"));
+    manager.add_message(Message::tool("1".into(), "5"));
+    manager.add_message(Message::assistant("结果是 5"));
 
-    manager.append(Message::new_text("再算 10*2", MessageRole::User));
-    manager.append(Message::new_text("使用计算器", MessageRole::Assistant));
-    manager.append(Message::new_text("20", MessageRole::Tool));
-    manager.append(Message::new_text("结果是 20", MessageRole::Assistant));
+    manager.add_message(Message::user("再算 10*2"));
+    manager.add_message(Message::assistant("使用计算器"));
+    manager.add_message(Message::tool("2".into(), "20"));
+    manager.add_message(Message::assistant("结果是 20"));
 
-    println!("\n总消息数: {}", manager.get_history().len());
+    println!("\n总消息数: {}", manager.messages().len());
     println!("轮次边界: {:?}", manager.find_round_boundaries());
     println!("完整轮次数: {}", manager.estimate_rounds());
 
     println!("\n✅ 轮次边界检测完成");
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
     println!("\n🚀 上下文工程示例演示\n");
 
     demo_token_counter();
     demo_simple_summary();
-    demo_smart_summary();
+    demo_smart_summary().await.unwrap();
     demo_history_management();
     demo_observation_truncator();
     demo_session_serialization();
@@ -266,4 +289,6 @@ fn main() {
     println!("\n{}", "=".repeat(60));
     println!("✅ 所有示例运行完成！");
     println!("{}", "=".repeat(60));
+
+    Ok(())
 }

@@ -19,8 +19,6 @@ string_slice = "warn"
 
 [workspace.dependencies]
 simple_hello_agents_base = {path = "crates/ch-04"}
-simple_hello_agents_v2 = {path = "crates/ch-07"}
-
 rmcp = { version = "1.4", default-features = false, features = ["schemars", "auth"] }
 agent-client-protocol-schema = { version = "0.12", default-features = false, features = ["unstable"] }
 agent-client-protocol = { version = "0.11", default-features = false }
@@ -66,7 +64,7 @@ tokio = { version = "1.48", default-features = false ,features = ["macros", "rt"
 tokio-stream = { version = "0.1.16", default-features = false }
 tokio-util = { version = "0.7.12", default-features = false, features = ["codec"]}
 tokio-test = { version = "0.4.5"}
-tower-http = { version = "0.6.8", default-features = false }
+tower-http = { version = "0.6.8", default-features = false , features = ["cors"]}
 tracing = { version = "0.1.43", default-features = false, features = ["std"] }
 tracing-appender = { version = "0.2.1", default-features = false }
 tracing-futures = { version = "0.2.4", default-features = false, features = ["futures-03", "std", "std-future"] }

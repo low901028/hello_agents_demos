@@ -1,19 +1,20 @@
-//! filter.rs
-//! 工具响应协议
-//!
-//! 标准化的工具响应格式，提供结构化的状态、数据和错误信息。
-//!
+//! ============================================================
+//! src/tools/filter.rs
+//! ============================================================
+use crate::core::traits::tool_filter::ToolFilter;
 use std::collections::HashSet;
 
-pub trait ToolFilter: Send + Sync {
-    fn filter(&self, all_tools: &[String]) -> Vec<String>;
-    fn is_allowed(&self, tool_name: &str) -> bool;
-}
-
 const READONLY_TOOLS: &[&str] = &[
-    "Read", "ReadTool", "LS", "LSTool",
-    "Glob", "GlobTool", "Grep", "GrepTool",
-    "Skill", "SkillTool",
+    "Read",
+    "ReadTool",
+    "LS",
+    "LSTool",
+    "Glob",
+    "GlobTool",
+    "Grep",
+    "GrepTool",
+    "Skill",
+    "SkillTool",
 ];
 
 pub struct ReadOnlyFilter {
@@ -21,9 +22,9 @@ pub struct ReadOnlyFilter {
 }
 
 impl ReadOnlyFilter {
-    pub fn new(additional_allowed: Option<Vec<String>>) -> Self {
+    pub fn new(additional: Option<Vec<String>>) -> Self {
         let mut allowed: HashSet<String> = READONLY_TOOLS.iter().map(|s| s.to_string()).collect();
-        if let Some(extra) = additional_allowed {
+        if let Some(extra) = additional {
             allowed.extend(extra);
         }
         Self { allowed }
@@ -31,16 +32,21 @@ impl ReadOnlyFilter {
 }
 
 impl ToolFilter for ReadOnlyFilter {
-    fn filter(&self, all_tools: &[String]) -> Vec<String> {
-        all_tools.iter().filter(|name| self.is_allowed(name)).cloned().collect()
+    fn filter(&self, all: &[String]) -> Vec<String> {
+        all.iter().filter(|n| self.is_allowed(n)).cloned().collect()
     }
-    fn is_allowed(&self, tool_name: &str) -> bool {
-        self.allowed.contains(tool_name)
+    fn is_allowed(&self, name: &str) -> bool {
+        self.allowed.contains(name)
     }
 }
 
 const DENIED_TOOLS: &[&str] = &[
-    "Bash", "BashTool", "Terminal", "TerminalTool", "Execute", "ExecuteTool",
+    "Bash",
+    "BashTool",
+    "Terminal",
+    "TerminalTool",
+    "Execute",
+    "ExecuteTool",
 ];
 
 pub struct FullAccessFilter {
@@ -48,9 +54,9 @@ pub struct FullAccessFilter {
 }
 
 impl FullAccessFilter {
-    pub fn new(additional_denied: Option<Vec<String>>) -> Self {
+    pub fn new(additional: Option<Vec<String>>) -> Self {
         let mut denied: HashSet<String> = DENIED_TOOLS.iter().map(|s| s.to_string()).collect();
-        if let Some(extra) = additional_denied {
+        if let Some(extra) = additional {
             denied.extend(extra);
         }
         Self { denied }
@@ -58,24 +64,23 @@ impl FullAccessFilter {
 }
 
 impl ToolFilter for FullAccessFilter {
-    fn filter(&self, all_tools: &[String]) -> Vec<String> {
-        all_tools.iter().filter(|name| self.is_allowed(name)).cloned().collect()
+    fn filter(&self, all: &[String]) -> Vec<String> {
+        all.iter().filter(|n| self.is_allowed(n)).cloned().collect()
     }
-    fn is_allowed(&self, tool_name: &str) -> bool {
-        !self.denied.contains(tool_name)
+    fn is_allowed(&self, name: &str) -> bool {
+        !self.denied.contains(name)
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FilterMode {
-    Whitelist,
-    Blacklist,
 }
 
 pub struct CustomFilter {
     allowed: HashSet<String>,
     denied: HashSet<String>,
     mode: FilterMode,
+}
+
+pub enum FilterMode {
+    Whitelist,
+    Blacklist,
 }
 
 impl CustomFilter {
@@ -93,13 +98,13 @@ impl CustomFilter {
 }
 
 impl ToolFilter for CustomFilter {
-    fn filter(&self, all_tools: &[String]) -> Vec<String> {
-        all_tools.iter().filter(|name| self.is_allowed(name)).cloned().collect()
+    fn filter(&self, all: &[String]) -> Vec<String> {
+        all.iter().filter(|n| self.is_allowed(n)).cloned().collect()
     }
-    fn is_allowed(&self, tool_name: &str) -> bool {
+    fn is_allowed(&self, name: &str) -> bool {
         match self.mode {
-            FilterMode::Whitelist => self.allowed.contains(tool_name),
-            FilterMode::Blacklist => !self.denied.contains(tool_name),
+            FilterMode::Whitelist => self.allowed.contains(name),
+            FilterMode::Blacklist => !self.denied.contains(name),
         }
     }
 }
