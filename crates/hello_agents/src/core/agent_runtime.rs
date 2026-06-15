@@ -6,6 +6,8 @@ use crate::core::traits::session_store::SessionStore;
 use crate::core::traits::tool_registry::ToolRegistry;
 use crate::core::types::config::Config;
 use std::sync::{Arc, Mutex};
+use crate::core::types::exceptions::HelloAgentError;
+use crate::core::types::session::SessionData;
 
 pub struct AgentRuntime {
     pub llm: Arc<dyn LlmProvider>,
@@ -41,5 +43,13 @@ impl AgentRuntime {
     pub fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(store);
         self
+    }
+
+    pub async fn save_session(&self, session: &SessionData) -> Result<Option<String>, HelloAgentError> {
+        if let Some(store) = &self.session_store {
+            Ok(Some(store.save(session).await?))
+        } else {
+            Ok(None)
+        }
     }
 }

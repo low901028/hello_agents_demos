@@ -1,58 +1,51 @@
-//! ============================================================
-//! src/infra/session_store_impl   (实现 SessionStore trait)
-//! ============================================================
-use crate::core::traits::session_store::SessionStore as SessionStoreTrait;
+// infra/session/store.rs
+use std::path::PathBuf;
+use async_trait::async_trait;
+use crate::core::traits::session_store::SessionStore;
 use crate::core::types::exceptions::HelloAgentError;
 use crate::core::types::session::{SessionData, SessionInfo};
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
 
-pub struct SessionStore {
+pub struct FileSessionStore {
     session_dir: PathBuf,
 }
 
-impl SessionStore {
-    pub fn new(session_dir: &str) -> Result<Self, HelloAgentError> {
-        let dir = PathBuf::from(session_dir);
-        fs::create_dir_all(&dir)?;
-        Ok(Self { session_dir: dir })
+impl FileSessionStore {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { session_dir: dir.into() }
     }
 }
 
-impl SessionStoreTrait for SessionStore {
-    fn save(&self, session: &SessionData) -> Result<String, HelloAgentError> {
+#[async_trait]
+impl SessionStore for FileSessionStore {
+    async fn save(&self, session: &SessionData) -> Result<String, HelloAgentError> {
         let filename = format!("{}.json", session.session_id);
-        let filepath = self.session_dir.join(filename);
-        let json = serde_json::to_string_pretty(session)?;
-        let temp = filepath.with_extension("tmp");
-        fs::write(&temp, &json)?;
-        fs::rename(&temp, &filepath)?;
-        Ok(filepath.to_string_lossy().to_string())
+        let filepath = self.session_dir.join(&filename);
+        let tmp = filepath.with_extension("tmp");
+        let json = serde_json::to_vec_pretty(session)?;
+        tokio::fs::write(&tmp, &json).await?;
+        tokio::fs::rename(&tmp, &filepath).await?;
+        Ok(filepath.to_string_lossy().into_owned())
     }
 
-    fn load(&self, path: &str) -> Result<SessionData, HelloAgentError> {
-        let content = fs::read_to_string(path)?;
-        let data = serde_json::from_str(&content)?;
-        Ok(data)
+    async fn load(&self, path: &str) -> Result<SessionData, HelloAgentError> {
+        let data = tokio::fs::read_to_string(path).await?;
+        let session: SessionData = serde_json::from_str(&data)?;
+        Ok(session)
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionInfo>, HelloAgentError> {
+    async fn list_sessions(&self) -> Result<Vec<SessionInfo>, HelloAgentError> {
         let mut sessions = Vec::new();
-        for entry in fs::read_dir(&self.session_dir)? {
-            let entry = entry?;
-            if entry.path().extension().map_or(false, |e| e == "json") {
-                if let Ok(content) = fs::read_to_string(entry.path()) {
-                    if let Ok(data) = serde_json::from_str::<SessionData>(&content) {
+        let mut dir = tokio::fs::read_dir(&self.session_dir).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "json") {
+                if let Ok(data) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(session) = serde_json::from_str::<SessionData>(&data) {
                         sessions.push(SessionInfo {
                             filename: entry.file_name().to_string_lossy().into_owned(),
-                            session_id: data.session_id,
-                            created_at: data
-                                .metadata
-                                .get("created_at")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
+                            session_id: session.session_id,
+                            created_at: session.metadata.get("created_at")
+                                .and_then(|v| v.as_str()).unwrap_or("").to_string(),
                         });
                     }
                 }
