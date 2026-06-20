@@ -5,11 +5,13 @@ use hello_agents::infra::tool_registry_impl::ToolRegistryImpl;
 use hello_agents::context::history_manager_impl::HistoryManagerImpl;
 use hello_agents::core::traits::history::HistoryManager;
 use hello_agents::core::traits::skill_optimizer::SkillOptimizer;
+use hello_agents::core::traits::tool::Tool;
 use hello_agents::infra::skill_optimizer_impl::LLMDrivenSkillOptimizer;
 use hello_agents::infra::skill_opt_config::SkillOptConfig;
 use hello_agents::core::types::config::Config;
 use hello_agents::core::types::skill_opt::{Skill, Task};
 use hello_agents::skills::skill_loader::SkillLoader;
+use hello_agents::tools::builtin::skill::SkillTool;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _ = AgentRuntime::new(target_llm, tools, history, Config::default())
         .with_skill_optimizer(skill_opt.clone());
+    // 创建 SkillTool 并注入优化器
+    let skill_tool = SkillTool::new(skill_loader.clone()).with_skill_optimizer(skill_opt.clone());
 
     // 从 SkillLoader 加载技能，并转换为 SkillOpt 使用的 Skill 类型
     // 安全地从 SkillLoader 获取技能并转换为 SkillOpt 所需类型
@@ -76,6 +80,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             metadata: serde_json::Value::Null,
         })
         .collect();
+
+    // 调用一次技能工具（自动记录反馈）
+    let _ = skill_tool.execute(serde_json::json!({"skill": "pdf"})).await?;
 
     println!("=========== skill evolve_step");
     let improved = skill_opt.evolve_step(&mut skill, &train_tasks, &val_tasks, 4).await?;
