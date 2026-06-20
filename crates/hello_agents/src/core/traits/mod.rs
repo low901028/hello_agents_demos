@@ -7,3 +7,5 @@ pub mod session_store;
 pub mod tool;
 pub mod tool_filter;
 pub mod tool_registry;
+
+pub mod skill_optimizer;

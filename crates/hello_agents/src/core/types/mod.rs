@@ -5,3 +5,5 @@ pub mod llm_response;
 pub mod message;
 pub mod response;
 pub mod session;
+
+pub mod skill_opt;

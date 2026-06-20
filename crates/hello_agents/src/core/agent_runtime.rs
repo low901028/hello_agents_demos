@@ -6,6 +6,7 @@ use crate::core::traits::session_store::SessionStore;
 use crate::core::traits::tool_registry::ToolRegistry;
 use crate::core::types::config::Config;
 use std::sync::{Arc, Mutex};
+use crate::core::traits::skill_optimizer::SkillOptimizer;
 use crate::core::types::exceptions::HelloAgentError;
 use crate::core::types::session::SessionData;
 
@@ -16,6 +17,7 @@ pub struct AgentRuntime {
     pub config: Config,
     pub trace_logger: Option<Arc<dyn TraceLogger>>,
     pub session_store: Option<Arc<dyn SessionStore>>,
+    pub skill_optimizer: Option<Arc<dyn SkillOptimizer>>,
 }
 
 impl AgentRuntime {
@@ -32,6 +34,7 @@ impl AgentRuntime {
             config,
             trace_logger: None,
             session_store: None,
+            skill_optimizer: None,
         }
     }
 
@@ -51,5 +54,10 @@ impl AgentRuntime {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn with_skill_optimizer(mut self, optimizer: Arc<dyn SkillOptimizer>) -> Self {
+        self.skill_optimizer = Some(optimizer);
+        self
     }
 }
