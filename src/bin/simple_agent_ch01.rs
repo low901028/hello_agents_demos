@@ -360,8 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let deepseek_key = env::var("DEEPSEEK_API_KEY").context("请设置 DEEPSEEK_API_KEY")?;
     let tavily_key = env::var("TAVILY_API_KEY").unwrap_or_default();
-    // let deepseek_key = "sk-36b810755bd84b78a003cf586dba9bef".to_string();
-    // let tavily_key = "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".to_string();
+
 
     // 使用最新 V4 模型（deepseek-v4-pro）
     let client = DeepSeekClient::new(
