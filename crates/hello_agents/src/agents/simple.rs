@@ -61,7 +61,7 @@ impl Agent for SimpleAgent {
             let mut tool_defs = Vec::new();
             for name in &tools {
                 if let Some(t) = runtime.tools.get_tool(name) {
-                    // 关键修复：构建完整的 function 定义，包含 name 和 description
+                    // 构建完整的 function 定义，包含 name 和 description
                     tool_defs.push(ToolDefinition {
                         def_type: "function",
                         function: serde_json::json!({
